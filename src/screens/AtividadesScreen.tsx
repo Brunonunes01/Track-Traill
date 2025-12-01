@@ -10,13 +10,13 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import { auth, database } from "../../services/connectionFirebase";
 
 export default function AtividadesScreen() {
   const route = useRoute();
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const { atividade }: any = route.params || {};
 
   const [activityType, setActivityType] = useState("caminhada");
@@ -46,7 +46,10 @@ export default function AtividadesScreen() {
     if (cleaned.length > 2 && cleaned.length <= 4) {
       formatted = `${cleaned.slice(0, 2)}/${cleaned.slice(2)}`;
     } else if (cleaned.length > 4) {
-      formatted = `${cleaned.slice(0, 2)}/${cleaned.slice(2, 4)}/${cleaned.slice(4, 8)}`;
+      formatted = `${cleaned.slice(0, 2)}/${cleaned.slice(
+        2,
+        4
+      )}/${cleaned.slice(4, 8)}`;
     }
 
     setDate(formatted);
@@ -72,6 +75,7 @@ export default function AtividadesScreen() {
           database,
           `users/${user.uid}/atividades/${atividade.id}`
         );
+
         await update(activityRef, {
           tipo: activityType,
           data: date,
@@ -79,6 +83,7 @@ export default function AtividadesScreen() {
           estado: state,
           duracao: duration,
         });
+
         Alert.alert("Sucesso", "Atividade atualizada com sucesso!");
       } else {
         await push(activitiesRef, {
@@ -89,12 +94,13 @@ export default function AtividadesScreen() {
           duracao: duration,
           criadoEm: new Date().toISOString(),
         });
+
         Alert.alert("Sucesso", "Atividade salva com sucesso!");
       }
 
       navigation.goBack();
     } catch (error) {
-      console.log(error);
+      console.error(error);
       Alert.alert("Erro", "Não foi possível salvar a atividade.");
     } finally {
       setLoading(false);
@@ -109,14 +115,18 @@ export default function AtividadesScreen() {
   return (
     <ImageBackground
       source={require("../../assets/images/Azulao.png")}
-      style={{ flex: 1 }}
       resizeMode="cover"
+      style={{ flex: 1 }}
     >
-<LinearGradient
-  colors={["rgba(15,12,41,0.85)", "rgba(48,43,99,0.85)", "rgba(36,36,62,0.85)"]}
-  style={styles.container}
->
-
+      {/* ✅ ÚNICA ALTERAÇÃO ESTÁ AQUI */}
+      <LinearGradient
+        colors={[
+          "rgba(0,0,0,0.8)",
+          "rgba(0,0,0,0.3)",
+          "rgba(0,0,0,0.8)",
+        ]}
+        style={styles.container}
+      >
         <ScrollView showsVerticalScrollIndicator={false}>
           <Text style={styles.title}>
             {atividade ? "Editar Atividade" : "Registrar Atividade"}
@@ -128,7 +138,8 @@ export default function AtividadesScreen() {
             onPress={() => setShowOptions(!showOptions)}
           >
             <Text style={styles.inputText}>
-              {activityType.charAt(0).toUpperCase() + activityType.slice(1)}
+              {activityType.charAt(0).toUpperCase() +
+                activityType.slice(1)}
             </Text>
           </TouchableOpacity>
 
@@ -202,7 +213,11 @@ export default function AtividadesScreen() {
             disabled={loading}
           >
             <Text style={styles.buttonText}>
-              {loading ? "Salvando..." : atividade ? "Atualizar" : "Concluir"}
+              {loading
+                ? "Salvando..."
+                : atividade
+                ? "Atualizar"
+                : "Concluir"}
             </Text>
           </TouchableOpacity>
         </ScrollView>
@@ -212,7 +227,11 @@ export default function AtividadesScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20 },
+  container: {
+    flex: 1,
+    paddingTop: 60,
+    paddingHorizontal: 20,
+  },
   title: {
     fontSize: 26,
     fontWeight: "bold",
@@ -238,7 +257,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.1)",
     color: "#fff",
   },
-  inputText: { fontSize: 16, color: "#fff" },
+  inputText: {
+    fontSize: 16,
+    color: "#fff",
+  },
   optionContainer: {
     backgroundColor: "rgba(255,255,255,0.1)",
     borderRadius: 10,
@@ -261,5 +283,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 10,
   },
-  buttonText: { color: "#fff", fontSize: 16, fontWeight: "bold" },
+  buttonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
 });

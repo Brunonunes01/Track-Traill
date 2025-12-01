@@ -1,3 +1,4 @@
+// src/screens/PlansScreen.tsx
 import { LinearGradient } from "expo-linear-gradient";
 import React, { useEffect, useState } from "react";
 import {
@@ -10,24 +11,94 @@ import {
   View,
 } from "react-native";
 
+import { useNavigation } from "@react-navigation/native";
+import { useCart } from "../context/CartContext";
+
+type Plan = {
+  id: string | number;
+  name: string;
+  type?: string;
+  price: string | number;
+  per?: string;
+  total?: string;
+  highlight?: boolean;
+  features?: string[] | string | Record<string, any>;
+};
+
 export default function PlansScreen() {
-  const [plans, setPlans] = useState<any[]>([]);
+  const [plans, setPlans] = useState<Plan[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const BIN_ID = "69243bb5ae596e708f6d84af"; 
-  const API_KEY = "$2a$10$T8eHLAmpCAXtEm3.F/R3fuGBuhNM7z31uRVjUzktvlXGs96VTjX2q";
+  const navigation = useNavigation<any>();
+  const { addToCart } = useCart();
+
+  const BIN_ID = "69243bb5ae596e708f6d84af";
+  const API_KEY =
+    "$2a$10$T8eHLAmpCAXtEm3.F/R3fuGBuhNM7z31uRVjUzktvlXGs96VTjX2q";
+
+  const parseDescription = (features?: Plan["features"]): string => {
+    if (!features) return "Plano selecionado";
+
+    if (Array.isArray(features)) {
+      return features.map(String).join(" • ");
+    }
+
+    if (typeof features === "string") {
+      return features;
+    }
+
+    if (typeof features === "object") {
+      return Object.values(features).map(String).join(" • ");
+    }
+
+    return "Plano selecionado";
+  };
+
+  const parsePrice = (price: string | number): number => {
+    if (typeof price === "number") return price;
+
+    const cleaned = String(price)
+      .replace("R$", "")
+      .replace(/\s/g, "")
+      .replace(/\./g, "")
+      .replace(",", ".")
+      .trim();
+
+    const n = Number(cleaned);
+    return isNaN(n) ? 0 : n;
+  };
+
+  const handleAddToCart = (item: Plan) => {
+    const safeId = String(
+      item.id ?? item.name ?? Math.random().toString(36).slice(2, 9)
+    );
+
+    addToCart({
+      id: safeId,
+      nome: item.name,
+      descricao: parseDescription(item.features),
+      preco: parsePrice(item.price),
+    });
+
+    navigation.navigate("Carrinho");
+  };
 
   useEffect(() => {
     async function loadPlans() {
       try {
-        const response = await fetch(`https://api.jsonbin.io/v3/b/${BIN_ID}`, {
-          headers: { "X-Master-Key": API_KEY },
-        });
+        const response = await fetch(
+          `https://api.jsonbin.io/v3/b/${BIN_ID}`,
+          {
+            headers: { "X-Master-Key": API_KEY },
+          }
+        );
 
         const json = await response.json();
-        setPlans(json.record.plans); // ← lista de planos do JSONBIN
+        const loaded = json?.record?.plans ?? json?.plans ?? [];
+        setPlans(Array.isArray(loaded) ? loaded : []);
       } catch (error) {
         console.log("Erro ao buscar planos:", error);
+        setPlans([]);
       } finally {
         setLoading(false);
       }
@@ -42,11 +113,12 @@ export default function PlansScreen() {
         source={require("../../assets/images/Azulao.png")}
         style={{ flex: 1 }}
       >
+        {/* ✅ MESMA TONALIDADE DA AtividadesScreen */}
         <LinearGradient
           colors={[
-            "rgba(15,12,41,0.85)",
-            "rgba(48,43,99,0.85)",
-            "rgba(36,36,62,0.85)",
+            "rgba(0,0,0,0.8)",
+            "rgba(0,0,0,0.3)",
+            "rgba(0,0,0,0.8)",
           ]}
           style={styles.center}
         >
@@ -62,11 +134,12 @@ export default function PlansScreen() {
       resizeMode="cover"
       style={{ flex: 1 }}
     >
+      {/* ✅ MESMA TONALIDADE DA AtividadesScreen */}
       <LinearGradient
         colors={[
-          "rgba(15,12,41,0.85)",
-          "rgba(48,43,99,0.85)",
-          "rgba(36,36,62,0.85)",
+          "rgba(0,0,0,0.8)",
+          "rgba(0,0,0,0.3)",
+          "rgba(0,0,0,0.8)",
         ]}
         style={{ flex: 1 }}
       >
@@ -75,36 +148,48 @@ export default function PlansScreen() {
 
           {plans.map((item) => (
             <View
-  key={item.id}
-  style={[
-    styles.card,
-    item.highlight ? { backgroundColor: "rgba(108,59,255,0.35)" } : null,
-  ]}
->
+              key={String(item.id ?? item.name)}
+              style={[
+                styles.card,
+                item.highlight
+                  ? { backgroundColor: "rgba(108,59,255,0.35)" }
+                  : null,
+              ]}
+            >
+              <Text style={styles.planTitle}>
+                {String(item.name ?? "").toUpperCase()}
+              </Text>
 
-              <Text style={styles.planTitle}>{item.name.toUpperCase()}</Text>
-              <Text style={styles.planSub}>{item.type}</Text>
+              {item.type && <Text style={styles.planSub}>{item.type}</Text>}
 
-              <Text style={styles.price}>{item.price}</Text>
+              <Text style={styles.price}>
+                {typeof item.price === "string"
+                  ? item.price
+                  : `R$ ${Number(item.price)
+                      .toFixed(2)
+                      .replace(".", ",")}`}
+              </Text>
 
-              {item.total ? (
-                <>
-                  <Text style={styles.per}>{item.per}</Text>
-                  <Text style={styles.total}>TOTAL: {item.total}</Text>
-                </>
-              ) : (
-                <Text style={styles.per}>{item.per}</Text>
+              {item.total && (
+                <Text style={styles.total}>TOTAL: {item.total}</Text>
               )}
+              {item.per && <Text style={styles.per}>{item.per}</Text>}
 
               {item.features &&
-                item.features.map((f: string, i: number) => (
+                (Array.isArray(item.features)
+                  ? item.features
+                  : typeof item.features === "object"
+                  ? Object.values(item.features)
+                  : [String(item.features)]
+                ).map((f, i) => (
                   <Text key={i} style={styles.feature}>
-                    • {f}
+                    • {String(f)}
                   </Text>
                 ))}
 
               <TouchableOpacity
                 style={item.highlight ? styles.btn : styles.btnOutline}
+                onPress={() => handleAddToCart(item)}
               >
                 <Text
                   style={
@@ -138,9 +223,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginBottom: 20,
   },
-
-  /* --- CARTÕES DE PLANO (mantido igual ao seu design original) --- */
-
   card: {
     width: "90%",
     padding: 25,
@@ -151,7 +233,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "#fff",
   },
-
   planTitle: {
     fontSize: 14,
     color: "#bbb",
@@ -167,7 +248,6 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "bold",
   },
-
   per: {
     color: "#ddd",
     marginTop: 5,
@@ -179,13 +259,11 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     textAlign: "center",
   },
-
   feature: {
     color: "#eee",
     fontSize: 14,
     marginTop: 4,
   },
-
   btn: {
     backgroundColor: "#ffd700",
     width: "80%",
@@ -199,7 +277,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     fontSize: 16,
   },
-
   btnOutline: {
     borderColor: "#fff",
     borderWidth: 2,

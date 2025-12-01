@@ -15,6 +15,7 @@ import {
 import { auth } from "../../services/connectionFirebase";
 
 import AtividadesScreen from "../screens/AtividadesScreen";
+import CartScreen from "../screens/CartScreen";
 import ConfiguracoesScreen from "../screens/ConfiguracoesScreen";
 import DashboardScreen from "../screens/DashboardScreen";
 import PerfilScreen from "../screens/PerfilScreen";
@@ -22,7 +23,8 @@ import PlansScreen from "../screens/PlansScreen";
 
 const Drawer = createDrawerNavigator();
 
-// Drawer customizado
+/* ================= DRAWER CUSTOMIZADO ================= */
+
 function CustomDrawerContent(props: any) {
   const { navigation } = props;
   const [user, setUser] = useState<any>(null);
@@ -45,7 +47,7 @@ function CustomDrawerContent(props: any) {
 
   return (
     <DrawerContentScrollView {...props} contentContainerStyle={{ flex: 1 }}>
-      {/* Header azul com imagem e nome */}
+      {/* HEADER */}
       <View style={styles.header}>
         <Image
           source={{
@@ -55,16 +57,20 @@ function CustomDrawerContent(props: any) {
           }}
           style={styles.profileImage}
         />
-        <Text style={styles.userName}>{user?.displayName || "Usuário"}</Text>
-        {user?.email && <Text style={styles.userEmail}>{user.email}</Text>}
+        <Text style={styles.userName}>
+          {user?.displayName || "Usuário"}
+        </Text>
+        {user?.email && (
+          <Text style={styles.userEmail}>{user.email}</Text>
+        )}
       </View>
 
-      {/* Itens normais do Drawer */}
+      {/* ITENS */}
       <View style={{ flex: 1, backgroundColor: "#1C1C1C", paddingTop: 10 }}>
         <DrawerItemList {...props} />
       </View>
 
-      {/* Botão de Sair */}
+      {/* LOGOUT */}
       <View style={styles.logoutContainer}>
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <Ionicons name="exit-outline" size={22} color="#1e4db7" />
@@ -75,6 +81,8 @@ function CustomDrawerContent(props: any) {
   );
 }
 
+/* ================= NAVIGATOR ================= */
+
 export default function DrawerNavigator() {
   return (
     <Drawer.Navigator
@@ -82,7 +90,7 @@ export default function DrawerNavigator() {
       drawerContent={(props) => <CustomDrawerContent {...props} />}
       screenOptions={{
         headerStyle: {
-          backgroundColor: "rgba(108,59,255,0.35)", // <<< AQUI DEIXEI TRANSPARENTE COM A COR QUE VOCÊ PEDIU
+          backgroundColor: "rgba(108,59,255,0.35)",
         },
         headerTintColor: "#FFF",
         headerTitleAlign: "center",
@@ -99,6 +107,7 @@ export default function DrawerNavigator() {
         },
       }}
     >
+      {/* DASHBOARD */}
       <Drawer.Screen
         name="Dashboard"
         component={DashboardScreen}
@@ -106,11 +115,16 @@ export default function DrawerNavigator() {
           drawerLabel: "Track Trail",
           headerTitle: "Painel Principal",
           drawerIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="pine-tree" size={size} color={color} />
+            <MaterialCommunityIcons
+              name="pine-tree"
+              size={size}
+              color={color}
+            />
           ),
         }}
       />
 
+      {/* PERFIL */}
       <Drawer.Screen
         name="Perfil"
         component={PerfilScreen}
@@ -118,11 +132,16 @@ export default function DrawerNavigator() {
           drawerLabel: "Meu Perfil",
           headerTitle: "Perfil do Usuário",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="person-circle-outline" size={size} color={color} />
+            <Ionicons
+              name="person-circle-outline"
+              size={size}
+              color={color}
+            />
           ),
         }}
       />
 
+      {/* ATIVIDADES */}
       <Drawer.Screen
         name="Atividades"
         component={AtividadesScreen}
@@ -130,23 +149,56 @@ export default function DrawerNavigator() {
           drawerLabel: "Atividades",
           headerTitle: "Suas Atividades",
           drawerIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="run" size={size} color={color} />
+            <MaterialCommunityIcons
+              name="run"
+              size={size}
+              color={color}
+            />
           ),
         }}
       />
 
+      {/* PLANOS ✅ (ÍCONE CORRETO) */}
       <Drawer.Screen
         name="Planos"
         component={PlansScreen}
-        options={{
+        options={({ navigation }) => ({
           drawerLabel: "Planos",
           headerTitle: "Planos de Assinatura",
+
+          headerRight: () => (
+            <TouchableOpacity
+              onPress={() => navigation.navigate("Carrinho")}
+              style={{ marginRight: 15 }}
+            >
+              <Ionicons name="cart-outline" size={26} color="#fff" />
+            </TouchableOpacity>
+          ),
+
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="cart-outline" size={size} color={color} />
+            <MaterialCommunityIcons
+              name="clipboard-text-outline"
+              size={size}
+              color={color}
+            />
+          ),
+        })}
+      />
+
+      {/* CARRINHO */}
+      <Drawer.Screen
+        name="Carrinho"
+        component={CartScreen}
+        options={{
+          drawerLabel: "Carrinho",
+          headerTitle: "Seu Carrinho",
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="cart" size={size} color={color} />
           ),
         }}
       />
 
+      {/* CONFIGURAÇÕES */}
       <Drawer.Screen
         name="Configuracoes"
         component={ConfiguracoesScreen}
@@ -154,7 +206,11 @@ export default function DrawerNavigator() {
           drawerLabel: "Configurações",
           headerTitle: "Preferências",
           drawerIcon: ({ color, size }) => (
-            <Ionicons name="settings-outline" size={size} color={color} />
+            <Ionicons
+              name="settings-outline"
+              size={size}
+              color={color}
+            />
           ),
         }}
       />
@@ -162,7 +218,8 @@ export default function DrawerNavigator() {
   );
 }
 
-// Estilos
+/* ================= ESTILOS ================= */
+
 const styles = StyleSheet.create({
   header: {
     backgroundColor: "transparent",
