@@ -9,13 +9,23 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.bruno.tracktrail",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "O Track & Trail precisa da sua localização para rastrear suas atividades e rotas.",
+        "NSLocationAlwaysUsageDescription": "O Track & Trail precisa da sua localização para rastrear suas atividades mesmo com a tela bloqueada."
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION"
+      ],
+      "package": "com.bruno.tracktrail",
       "edgeToEdgeEnabled": true
     },
     "web": {
@@ -32,6 +42,12 @@
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Permitir que o Track & Trail acesse sua localização para mapear trilhas."
         }
       ]
     ],

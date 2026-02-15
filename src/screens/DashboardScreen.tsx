@@ -21,20 +21,19 @@ export default function DashboardScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [editItem, setEditItem] = useState<any>(null);
 
+  // Estados de Edição
   const [tipo, setTipo] = useState("");
   const [cidade, setCidade] = useState("");
   const [data, setData] = useState("");
   const [duracao, setDuracao] = useState("");
+  const [distancia, setDistancia] = useState(""); // Novo campo
 
   const navigation = useNavigation<any>();
   const user = auth.currentUser;
 
-  /* Header Preto */
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerStyle: {
-        backgroundColor: "#111",
-      },
+      headerStyle: { backgroundColor: "#111" },
       headerTintColor: "#fff",
       headerTitle: "Painel Principal",
     });
@@ -50,8 +49,9 @@ export default function DashboardScreen() {
           id: key,
           ...data[key],
         }));
+        // Ordena pela data (mais recente primeiro)
         const sorted = parsed.sort(
-          (a, b) => new Date(b.data).getTime() - new Date(a.data).getTime()
+          (a, b) => new Date(b.criadoEm || b.data).getTime() - new Date(a.criadoEm || a.data).getTime()
         );
         setAtividades(sorted);
       } else {
@@ -62,16 +62,7 @@ export default function DashboardScreen() {
   }, [user]);
 
   const capitalize = (text?: string) =>
-    text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
-
-  const getHoraLogin = () => {
-    const raw = auth.currentUser?.metadata?.lastSignInTime;
-    if (!raw) return "--:--";
-    const date = new Date(raw);
-    return date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  };
-
-  const getDataHoje = () => new Date().toLocaleDateString("pt-BR");
+    text ? text.charAt(0).toUpperCase() + text.slice(1) : "Atividade";
 
   const openEditModal = (item: any) => {
     setEditItem(item);
@@ -79,6 +70,7 @@ export default function DashboardScreen() {
     setCidade(item.cidade);
     setData(item.data);
     setDuracao(String(item.duracao ?? 0));
+    setDistancia(String(item.distancia ?? 0));
     setModalVisible(true);
   };
 
@@ -90,12 +82,31 @@ export default function DashboardScreen() {
       cidade,
       data,
       duracao: Number(duracao),
+      distancia: Number(distancia), // Salva a edição da distância
     })
       .then(() => {
         setModalVisible(false);
         setEditItem(null);
       })
       .catch((err) => Alert.alert("Erro", err.message));
+  };
+
+  const handleDelete = (item: any) => {
+    Alert.alert(
+      "Excluir atividade",
+      "Tem certeza? Essa ação não pode ser desfeita.",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Excluir",
+          style: "destructive",
+          onPress: () => {
+            const activityRef = ref(database, `users/${user?.uid}/atividades/${item.id}`);
+            remove(activityRef);
+          },
+        },
+      ]
+    );
   };
 
   return (
@@ -105,17 +116,15 @@ export default function DashboardScreen() {
       style={{ flex: 1 }}
     >
       <LinearGradient
-        colors={["rgba(0,0,0,0.8)", "rgba(0,0,0,0.3)", "rgba(0,0,0,0.8)"]}
+        colors={["rgba(0,0,0,0.8)", "rgba(0,0,0,0.3)", "rgba(0,0,0,0.9)"]}
         style={{ flex: 1 }}
       >
         <View style={styles.container}>
-          <View style={styles.summary}>
-            <Text style={styles.summaryText}>⏱ Último login — {getHoraLogin()}</Text>
-            <Text style={styles.summaryText}>📅 Hoje — {getDataHoje()}</Text>
+            
+          <View style={styles.headerRow}>
+             <Text style={styles.title}>Minhas Aventuras</Text>
+             <Text style={styles.countText}>{atividades.length} registro(s)</Text>
           </View>
-
-          <Text style={styles.title}>Minhas Atividades</Text>
-          <Text style={styles.subtitle}>Agendamentos</Text>
 
           <FlatList
             data={atividades}
@@ -124,154 +133,116 @@ export default function DashboardScreen() {
             contentContainerStyle={{ paddingBottom: 130 }}
             renderItem={({ item }) => (
               <TouchableOpacity
-                activeOpacity={0.85}
+                activeOpacity={0.9}
                 onPress={() =>
                   navigation.navigate("ActivityView", {
-                    atividade: { ...item, tipo: capitalize(item.tipo) },
+                    atividade: item, // Passa o objeto inteiro (com rota)
                   })
                 }
               >
-                <ImageBackground
-                  source={require("../../assets/images/Corrida.jpg")}
-                  resizeMode="cover"
-                  style={styles.card}
-                  imageStyle={styles.cardImage}
-                >
-                  <View style={styles.cardOverlay}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.itemTitle}>{capitalize(item.tipo)}</Text>
-                      <View style={styles.infoRow}>
-                        <Ionicons name="location-outline" size={16} color="#fff" />
-                        <Text style={styles.itemInfo}>{item.cidade}</Text>
-                      </View>
-                      <View style={styles.infoRow}>
-                        <Ionicons name="calendar-outline" size={16} color="#fff" />
-                        <Text style={styles.itemInfo}>{item.data}</Text>
-                      </View>
-                      <View style={styles.infoRow}>
-                        <Ionicons name="time-outline" size={16} color="#fff" />
-                        <Text style={styles.itemInfo}>{item.duracao ?? 0} min</Text>
-                      </View>
-
-                      <View style={styles.actionRow}>
-                        <TouchableOpacity
-                          style={styles.actionButton}
-                          onPress={() => openEditModal(item)}
+                <View style={styles.card}>
+                    {/* Imagem de Fundo do Card */}
+                    <ImageBackground
+                        source={require("../../assets/images/Corrida.jpg")}
+                        style={styles.cardBg}
+                        imageStyle={{ borderRadius: 16 }}
+                    >
+                        <LinearGradient 
+                            colors={['transparent', 'rgba(0,0,0,0.8)']} 
+                            style={styles.cardOverlay}
                         >
-                          <Ionicons name="create-outline" size={20} color="#fff" />
-                          <Text style={styles.actionText}>Editar</Text>
-                        </TouchableOpacity>
+                            <View style={styles.cardHeader}>
+                                <Text style={styles.itemTitle}>{capitalize(item.tipo)}</Text>
+                                <View style={styles.dateBadge}>
+                                    <Text style={styles.dateText}>{item.data}</Text>
+                                </View>
+                            </View>
 
-                        <TouchableOpacity
-                          style={[styles.actionButton, { backgroundColor: "#FF4D4F" }]}
-                          onPress={() => {
-                            Alert.alert(
-                              "Excluir atividade",
-                              "Deseja realmente excluir esta atividade?",
-                              [
-                                { text: "Cancelar", style: "cancel" },
-                                {
-                                  text: "Excluir",
-                                  style: "destructive",
-                                  onPress: () => {
-                                    const activityRef = ref(
-                                      database,
-                                      `users/${user?.uid}/atividades/${item.id}`
-                                    );
-                                    remove(activityRef);
-                                  },
-                                },
-                              ]
-                            );
-                          }}
-                        >
-                          <Ionicons name="trash-outline" size={20} color="#fff" />
-                          <Text style={styles.actionText}>Excluir</Text>
-                        </TouchableOpacity>
-                      </View>
-                    </View>
+                            <View style={styles.statsContainer}>
+                                <View style={styles.statItem}>
+                                    <Ionicons name="time-outline" size={18} color="#aaa" />
+                                    <Text style={styles.statValue}>{item.duracao} min</Text>
+                                </View>
+                                <View style={styles.statItem}>
+                                    <Ionicons name="resize-outline" size={18} color="#aaa" />
+                                    <Text style={styles.statValue}>{item.distancia ?? 0} km</Text>
+                                </View>
+                                <View style={styles.statItem}>
+                                    <Ionicons name="location-outline" size={18} color="#aaa" />
+                                    <Text style={styles.statValue} numberOfLines={1}>{item.cidade}</Text>
+                                </View>
+                            </View>
 
-                    <Ionicons
-                      name="chevron-forward"
-                      size={22}
-                      color="rgba(255,255,255,0.8)"
-                    />
-                  </View>
-                </ImageBackground>
+                            {/* Botões de Ação Rápidos */}
+                            <View style={styles.actionRow}>
+                                <TouchableOpacity onPress={() => openEditModal(item)} style={styles.miniBtn}>
+                                    <Ionicons name="create-outline" size={20} color="#fff" />
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={() => handleDelete(item)} style={[styles.miniBtn, {backgroundColor: 'rgba(239, 68, 68, 0.3)'}]}>
+                                    <Ionicons name="trash-outline" size={20} color="#ff6b6b" />
+                                </TouchableOpacity>
+                            </View>
+
+                        </LinearGradient>
+                    </ImageBackground>
+                </View>
               </TouchableOpacity>
             )}
           />
 
           {/* MODAL DE EDIÇÃO */}
-          <Modal visible={modalVisible} transparent animationType="slide">
+          <Modal visible={modalVisible} transparent animationType="fade">
             <View style={styles.modalOverlay}>
               <View style={styles.modalContent}>
-                <Text style={{ fontWeight: "700", fontSize: 18, marginBottom: 10 }}>
-                  Editar Atividade
-                </Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Tipo"
-                  value={tipo}
-                  onChangeText={setTipo}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Cidade"
-                  value={cidade}
-                  onChangeText={setCidade}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Data"
-                  value={data}
-                  onChangeText={setData}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Duração (min)"
-                  value={duracao}
-                  keyboardType="numeric"
-                  onChangeText={setDuracao}
-                />
-                <View style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 10 }}>
-                  <TouchableOpacity style={styles.saveButton} onPress={handleSaveEdit}>
-                    <Text style={{ color: "#fff", fontWeight: "700" }}>Salvar</Text>
-                  </TouchableOpacity>
+                <Text style={styles.modalTitle}>Editar Registro</Text>
+                
+                <Text style={styles.label}>Tipo</Text>
+                <TextInput style={styles.input} value={tipo} onChangeText={setTipo} />
+                
+                <Text style={styles.label}>Cidade</Text>
+                <TextInput style={styles.input} value={cidade} onChangeText={setCidade} />
+                
+                <View style={{flexDirection: 'row', gap: 10}}>
+                    <View style={{flex: 1}}>
+                        <Text style={styles.label}>Data</Text>
+                        <TextInput style={styles.input} value={data} onChangeText={setData} />
+                    </View>
+                    <View style={{flex: 1}}>
+                        <Text style={styles.label}>Duração (min)</Text>
+                        <TextInput style={styles.input} value={duracao} keyboardType="numeric" onChangeText={setDuracao} />
+                    </View>
+                </View>
+
+                 <Text style={styles.label}>Distância (km)</Text>
+                 <TextInput style={styles.input} value={distancia} keyboardType="numeric" onChangeText={setDistancia} />
+
+                <View style={styles.modalButtons}>
                   <TouchableOpacity style={styles.cancelButton} onPress={() => setModalVisible(false)}>
-                    <Text style={{ color: "#000", fontWeight: "700" }}>Cancelar</Text>
+                    <Text style={styles.btnTextConfig}>Cancelar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.saveButton} onPress={handleSaveEdit}>
+                    <Text style={[styles.btnTextConfig, {color: '#fff'}]}>Salvar</Text>
                   </TouchableOpacity>
                 </View>
               </View>
             </View>
           </Modal>
 
+          {/* BARRA INFERIOR FLUTUANTE */}
           <View style={styles.bottomBar}>
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => navigation.navigate("Planos")}
-            >
-              <Ionicons name="document-text-outline" size={26} color="#6c6c6c" />
+            <TouchableOpacity onPress={() => navigation.navigate("Planos")}>
+              <Ionicons name="trophy-outline" size={28} color="#666" />
             </TouchableOpacity>
 
-            <View style={styles.addButtonWrapper}>
-              <View style={styles.whiteBorder}>
-                <TouchableOpacity
-                  style={styles.addButton}
-                  onPress={() => navigation.navigate("Atividades")}
-                >
-                  <Ionicons name="add" size={32} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            </View>
+            <TouchableOpacity style={styles.addBtnCircle} onPress={() => navigation.navigate("Atividades")}>
+                <Ionicons name="add" size={36} color="#fff" />
+            </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => navigation.navigate("Perfil")}
-            >
-              <Ionicons name="person-outline" size={26} color="#6c6c6c" />
+            <TouchableOpacity onPress={() => navigation.navigate("Perfil")}>
+              <Ionicons name="person-outline" size={28} color="#666" />
             </TouchableOpacity>
           </View>
+
         </View>
       </LinearGradient>
     </ImageBackground>
@@ -279,29 +250,37 @@ export default function DashboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingTop: 60, paddingHorizontal: 20 },
-  summary: { flexDirection: "row", justifyContent: "space-between", marginBottom: 16, marginTop: -40 },
-  summaryText: { color: "#dcdcff", fontSize: 14, fontWeight: "600" },
-  title: { fontSize: 26, fontWeight: "bold", color: "#fff", textAlign: "center", marginBottom: 6 },
-  subtitle: { fontSize: 16, color: "#b2b2c9", textAlign: "center", marginBottom: 20 },
-  card: { height: 170, borderRadius: 22, marginBottom: 16, overflow: "hidden" },
-  cardImage: { borderRadius: 22, opacity: 0.7 },
-  cardOverlay: { flex: 1, padding: 20, flexDirection: "row", alignItems: "center", backgroundColor: "rgba(0,0,0,0.45)" },
-  itemTitle: { color: "#fff", fontSize: 20, fontWeight: "700", marginBottom: 10 },
-  infoRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
-  itemInfo: { color: "#fff", fontSize: 14 },
-  actionRow: { flexDirection: "row", marginTop: 12, gap: 10 },
-  actionButton: { flexDirection: "row", alignItems: "center", backgroundColor: "#2F66F6", paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8, gap: 4 },
-  actionText: { color: "#fff", fontSize: 12, fontWeight: "600" },
-  bottomBar: { position: "absolute", bottom: 20, left: 20, right: 20, height: 70, backgroundColor: "#fff", borderRadius: 35, flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 40, elevation: 8 },
-  iconButton: { alignItems: "center", justifyContent: "center" },
-  addButtonWrapper: { position: "absolute", left: "50%", marginLeft: -47.5, bottom: 22, width: 95, height: 95, borderRadius: 47.5, justifyContent: "center", alignItems: "center" },
-  whiteBorder: { width: 80, height: 80, borderRadius: 40, backgroundColor: "#fff", justifyContent: "center", alignItems: "center" },
-  addButton: { width: 70, height: 70, borderRadius: 35, backgroundColor: "#2F66F6", alignItems: "center", justifyContent: "center" },
+  container: { flex: 1, paddingTop: 50, paddingHorizontal: 20 },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  title: { fontSize: 24, fontWeight: "bold", color: "#fff" },
+  countText: { color: '#aaa', fontSize: 14 },
+  
+  card: { marginBottom: 20, borderRadius: 16, overflow: 'hidden', elevation: 5 },
+  cardBg: { height: 180, justifyContent: 'flex-end' },
+  cardOverlay: { padding: 15, height: '100%', justifyContent: 'space-between' },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+  itemTitle: { color: '#fff', fontSize: 22, fontWeight: 'bold', textShadowColor: 'rgba(0,0,0,0.7)', textShadowRadius: 5 },
+  dateBadge: { backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
+  dateText: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  
+  statsContainer: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 12, padding: 10 },
+  statItem: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  statValue: { color: '#fff', fontWeight: '600', fontSize: 14, maxWidth: 80 },
 
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "center", alignItems: "center" },
-  modalContent: { width: "85%", backgroundColor: "#fff", borderRadius: 20, padding: 20 },
-  input: { borderWidth: 1, borderColor: "#ccc", borderRadius: 8, padding: 10, marginBottom: 10 },
-  saveButton: { flex: 1, backgroundColor: "#2F66F6", padding: 10, borderRadius: 8, alignItems: "center", marginRight: 5 },
-  cancelButton: { flex: 1, backgroundColor: "#ddd", padding: 10, borderRadius: 8, alignItems: "center", marginLeft: 5 },
+  actionRow: { position: 'absolute', top: 10, right: 10, flexDirection: 'row', gap: 8 },
+  miniBtn: { backgroundColor: 'rgba(0,0,0,0.5)', padding: 6, borderRadius: 20 },
+
+  bottomBar: { position: "absolute", bottom: 30, left: 20, right: 20, height: 70, backgroundColor: "#fff", borderRadius: 35, flexDirection: "row", justifyContent: "space-around", alignItems: "center", elevation: 10 },
+  addBtnCircle: { width: 64, height: 64, borderRadius: 32, backgroundColor: "#2563eb", justifyContent: 'center', alignItems: 'center', top: -20, borderWidth: 4, borderColor: '#121212' },
+  
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.8)", justifyContent: "center", alignItems: "center" },
+  modalContent: { width: "90%", backgroundColor: "#1e1e1e", borderRadius: 20, padding: 25, borderWidth: 1, borderColor: '#333' },
+  modalTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
+  label: { color: '#bbb', marginBottom: 5, fontSize: 14 },
+  input: { backgroundColor: '#333', color: '#fff', borderRadius: 10, padding: 12, marginBottom: 15 },
+  modalButtons: { flexDirection: 'row', gap: 10, marginTop: 10 },
+  saveButton: { flex: 1, backgroundColor: '#2563eb', padding: 15, borderRadius: 10, alignItems: 'center' },
+  cancelButton: { flex: 1, backgroundColor: '#444', padding: 15, borderRadius: 10, alignItems: 'center' },
+  btnTextConfig: { fontWeight: 'bold', color: '#ccc' }
 });

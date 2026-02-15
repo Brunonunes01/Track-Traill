@@ -18,6 +18,7 @@ import AtividadesScreen from "../screens/AtividadesScreen";
 import CartScreen from "../screens/CartScreen";
 import ConfiguracoesScreen from "../screens/ConfiguracoesScreen";
 import DashboardScreen from "../screens/DashboardScreen";
+import InicialScreen from "../screens/InicialScreen.web";
 import PerfilScreen from "../screens/PerfilScreen";
 import PlansScreen from "../screens/PlansScreen";
 
@@ -112,7 +113,7 @@ export default function DrawerNavigator() {
         name="Dashboard"
         component={DashboardScreen}
         options={{
-          drawerLabel: "Track Trail",
+          drawerLabel: "Agendamentos",
           headerTitle: "Painel Principal",
           drawerIcon: ({ color, size }) => (
             <MaterialCommunityIcons
@@ -140,6 +141,24 @@ export default function DrawerNavigator() {
           ),
         }}
       />
+
+      {/* MAPA / INICIAL */}
+<Drawer.Screen
+  name="Inicial"
+  component={InicialScreen}
+  options={{
+    drawerLabel: "Mapa",
+    headerTitle: "Mapa de Lugares",
+    drawerIcon: ({ color, size }) => (
+      <Ionicons
+        name="map-outline"
+        size={size}
+        color={color}
+      />
+    ),
+  }}
+/>
+
 
       {/* ATIVIDADES */}
       <Drawer.Screen
