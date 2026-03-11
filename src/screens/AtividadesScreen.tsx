@@ -1,11 +1,11 @@
-import { Ionicons } from "@expo/vector-icons"; // Ícones bonitos
-import { useNavigation, useRoute } from "@react-navigation/native";
-import { LinearGradient } from "expo-linear-gradient";
-import { push, ref, update } from "firebase/database";
-import React, { useEffect, useState } from "react";
+import { Ionicons } from "@expo/vector-icons";
+import { push, ref, set } from "firebase/database";
+import React, { useState } from "react";
 import {
   Alert,
   ImageBackground,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -14,351 +14,219 @@ import {
   View,
 } from "react-native";
 import { auth, database } from "../../services/connectionFirebase";
+import MapTracker from "../components/MapTracker"; // Importamos o componente de GPS
 
-// Importamos nosso novo componente
-import MapTracker from "../components/MapTracker";
-
-export default function AtividadesScreen() {
-  const route = useRoute();
-  const navigation = useNavigation<any>();
-  const { atividade }: any = route.params || {};
-
-  // Estados do Formulário
-  const [activityType, setActivityType] = useState("caminhada");
-  const [showOptions, setShowOptions] = useState(false);
-  const [date, setDate] = useState("");
-  const [city, setCity] = useState("");
-  const [state, setState] = useState("");
-  const [duration, setDuration] = useState("");
-  const [coordinates, setCoordinates] = useState<any[]>([]); // Para salvar a rota
-  const [distance, setDistance] = useState(0); // Para salvar distancia
-  const [loading, setLoading] = useState(false);
-
-  // Estado para controlar o Modo GPS
+export default function AtividadesScreen({ navigation }: any) {
   const [isTracking, setIsTracking] = useState(false);
+  const [rota, setRota] = useState<any[]>([]); // Guarda as coordenadas do mapa
 
-  const user = auth.currentUser;
-
-  useEffect(() => {
-    if (atividade) {
-      setActivityType(atividade.tipo || "caminhada");
-      setDate(atividade.data || "");
-      setCity(atividade.cidade || "");
-      setState(atividade.estado || "");
-      setDuration(atividade.duracao || "");
-    }
-  }, [atividade]);
-
-  const handleDateChange = (text: string) => {
-    const cleaned = text.replace(/\D/g, "");
-    let formatted = cleaned;
-    if (cleaned.length > 2 && cleaned.length <= 4) {
-      formatted = `${cleaned.slice(0, 2)}/${cleaned.slice(2)}`;
-    } else if (cleaned.length > 4) {
-      formatted = `${cleaned.slice(0, 2)}/${cleaned.slice(2, 4)}/${cleaned.slice(4, 8)}`;
-    }
-    setDate(formatted);
-  };
-
-  // Função chamada quando o GPS termina
-  const handleFinishTracking = (data: { coordinates: any[]; distance: number; duration: number }) => {
-    setIsTracking(false);
-    setCoordinates(data.coordinates);
-    setDistance(data.distance);
-    setDuration(data.duration.toString());
-    
-    // Pega a data de hoje automaticamente
+  const [tipo, setTipo] = useState("");
+  const [cidade, setCidade] = useState("");
+  const [data, setData] = useState(() => {
+    // Preenche com a data de hoje por defeito
     const today = new Date();
-    const formattedDate = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`;
-    setDate(formattedDate);
+    return `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth()+1).toString().padStart(2, '0')}/${today.getFullYear()}`;
+  });
+  const [duracao, setDuracao] = useState("");
+  const [distancia, setDistancia] = useState("");
 
-    Alert.alert("Trilha Concluída!", `Você percorreu ${data.distance} km em ${data.duration} min.`);
+  // Função chamada quando o utilizador finaliza a trilha no MapTracker
+  const handleFinishTracking = (trackerData: { coordinates: any[]; distance: number; duration: number }) => {
+    setRota(trackerData.coordinates);
+    setDistancia(trackerData.distance.toString());
+    setDuracao(trackerData.duration.toString());
+    setIsTracking(false);
+    Alert.alert("Trilha Concluída", "Dados do GPS recolhidos! Preencha o tipo e o local para guardar.");
   };
 
-  const handleSave = async () => {
+  const handleSaveActivity = async () => {
+    if (!tipo || !cidade || !data || !duracao || !distancia) {
+      Alert.alert("Atenção", "Por favor, preencha todos os campos.");
+      return;
+    }
+
+    const user = auth.currentUser;
     if (!user) {
-      Alert.alert("Erro", "Usuário não autenticado!");
+      Alert.alert("Erro", "Utilizador não autenticado.");
       return;
     }
 
-    if (!activityType || !date || !city || !state) {
-      Alert.alert("Atenção", "Preencha todos os campos obrigatórios!");
-      return;
-    }
-
-    setLoading(true);
     try {
       const activitiesRef = ref(database, `users/${user.uid}/atividades`);
+      const newActivityRef = push(activitiesRef);
       
-      const payload = {
-        tipo: activityType,
-        data: date,
-        cidade: city,
-        estado: state,
-        duracao: duration,
-        distancia: distance, // Novo campo
-        rota: coordinates, // Salva o array de coordenadas do GPS
-        atualizadoEm: new Date().toISOString(),
-      };
+      // Guarda os dados juntamente com o array da rota do GPS
+      await set(newActivityRef, {
+        tipo,
+        cidade,
+        data,
+        duracao: Number(duracao),
+        distancia: Number(distancia),
+        rota: rota.length > 0 ? rota : null, // Guarda as coordenadas
+        criadoEm: new Date().toISOString(),
+      });
 
-      if (atividade && atividade.id) {
-        const activityRef = ref(database, `users/${user.uid}/atividades/${atividade.id}`);
-        await update(activityRef, payload);
-        Alert.alert("Sucesso", "Atividade atualizada com sucesso!");
-      } else {
-        await push(activitiesRef, {
-          ...payload,
-          criadoEm: new Date().toISOString(),
-        });
-        Alert.alert("Sucesso", "Atividade salva com sucesso!");
-      }
+      Alert.alert("Sucesso!", "A sua atividade foi guardada com sucesso.");
       navigation.goBack();
-    } catch (error) {
-      console.error(error);
-      Alert.alert("Erro", "Não foi possível salvar a atividade.");
-    } finally {
-      setLoading(false);
+      
+    } catch (error: any) {
+      Alert.alert("Erro", "Não foi possível guardar a atividade: " + error.message);
     }
   };
 
-  const handleSelectType = (type: string) => {
-    setActivityType(type);
-    setShowOptions(false);
-  };
+  const webInputExtraStyle = Platform.OS === "web" ? { outlineWidth: 0 } : {};
 
-  // SE O MODO RASTREAMENTO ESTIVER ATIVO, MOSTRA O MAPA EM TELA CHEIA
+  // Se o modo de rastreamento estiver ativo, mostra apenas o MapTracker
   if (isTracking) {
     return (
-        <MapTracker 
-            onFinish={handleFinishTracking} 
-            onCancel={() => setIsTracking(false)} 
-        />
+      <MapTracker 
+        onFinish={handleFinishTracking} 
+        onCancel={() => setIsTracking(false)} 
+      />
     );
   }
 
-  // SE NÃO, MOSTRA O FORMULÁRIO NORMAL
   return (
     <ImageBackground
       source={require("../../assets/images/Azulao.png")}
-      resizeMode="cover"
-      style={{ flex: 1 }}
+      style={styles.background}
     >
-      <LinearGradient
-        colors={["rgba(0,0,0,0.8)", "rgba(0,0,0,0.4)", "rgba(0,0,0,0.9)"]}
-        style={styles.container}
-      >
-        <ScrollView showsVerticalScrollIndicator={false}>
-          <Text style={styles.title}>
-            {atividade ? "Editar Atividade" : "Nova Aventura"}
-          </Text>
+      <View style={styles.overlay}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={{ width: "100%", flex: 1 }}
+        >
+          <ScrollView contentContainerStyle={styles.scrollContainer}>
+            
+            <View style={styles.header}>
+              <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+                <Ionicons name="arrow-back" size={28} color="#fff" />
+              </TouchableOpacity>
+              <Text style={styles.title}>Nova Atividade</Text>
+              <View style={{ width: 28 }} />
+            </View>
 
-          {/* Botão GRANDE para iniciar GPS */}
-          {!atividade && (
-            <TouchableOpacity 
-                style={styles.gpsButton} 
-                onPress={() => setIsTracking(true)}
-            >
-                <Ionicons name="location-outline" size={24} color="#fff" style={{marginRight: 10}} />
-                <Text style={styles.gpsButtonText}>INICIAR RASTREAMENTO GPS</Text>
+            {/* BOTÃO PARA ABRIR O GPS */}
+            <TouchableOpacity style={styles.gpsButton} onPress={() => setIsTracking(true)}>
+              <Ionicons name="map-outline" size={24} color="#fff" />
+              <Text style={styles.gpsButtonText}>
+                {rota.length > 0 ? "Refazer Rastreio GPS" : "Iniciar Rastreio GPS"}
+              </Text>
             </TouchableOpacity>
-          )}
 
-          <Text style={styles.sectionTitle}>Ou registre manualmente:</Text>
+            {rota.length > 0 && (
+              <Text style={styles.successText}>✓ Rota de {distancia} km gravada!</Text>
+            )}
 
-          <Text style={styles.label}>Tipo de Atividade</Text>
-          <TouchableOpacity
-            style={styles.input}
-            onPress={() => setShowOptions(!showOptions)}
-          >
-            <Text style={styles.inputText}>
-              {activityType.charAt(0).toUpperCase() + activityType.slice(1)}
-            </Text>
-          </TouchableOpacity>
+            <View style={styles.formContainer}>
+              <Text style={styles.label}>Desporto (Ex: Ciclismo, Corrida)</Text>
+              <TextInput
+                style={[styles.input, webInputExtraStyle as any]}
+                placeholder="Qual foi a atividade?"
+                placeholderTextColor="#aaa"
+                value={tipo}
+                onChangeText={setTipo}
+              />
 
-          {showOptions && (
-            <View style={styles.optionContainer}>
-              {["caminhada", "ciclismo", "corrida", "surf", "trilha", "academia"].map((tipo) => (
-                <TouchableOpacity
-                  key={tipo}
-                  style={styles.optionItem}
-                  onPress={() => handleSelectType(tipo)}
-                >
-                  <Text style={styles.optionText}>
-                    {tipo.charAt(0).toUpperCase() + tipo.slice(1)}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          )}
+              <Text style={styles.label}>Local / Cidade</Text>
+              <TextInput
+                style={[styles.input, webInputExtraStyle as any]}
+                placeholder="Onde foi?"
+                placeholderTextColor="#aaa"
+                value={cidade}
+                onChangeText={setCidade}
+              />
 
-          <Text style={styles.label}>Data</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="DD/MM/AAAA"
-            placeholderTextColor="#aaa"
-            value={date}
-            onChangeText={handleDateChange}
-            keyboardType="numeric"
-            maxLength={10}
-          />
+              <Text style={styles.label}>Data (DD/MM/AAAA)</Text>
+              <TextInput
+                style={[styles.input, webInputExtraStyle as any]}
+                placeholder="Quando aconteceu?"
+                placeholderTextColor="#aaa"
+                value={data}
+                onChangeText={setData}
+                keyboardType="numbers-and-punctuation"
+              />
 
-          <View style={{flexDirection: 'row', gap: 10}}>
-            <View style={{flex: 1}}>
-                <Text style={styles.label}>Cidade</Text>
-                <TextInput
-                    style={styles.input}
-                    placeholder="Cidade"
+              <View style={styles.row}>
+                <View style={styles.halfInput}>
+                  <Text style={styles.label}>Duração (min)</Text>
+                  <TextInput
+                    style={[styles.input, webInputExtraStyle as any]}
+                    placeholder="Ex: 45"
                     placeholderTextColor="#aaa"
-                    value={city}
-                    onChangeText={setCity}
-                />
-            </View>
-            <View style={{width: 80}}>
-                <Text style={styles.label}>UF</Text>
-                <TextInput
-                    style={styles.input}
-                    placeholder="SP"
+                    value={duracao}
+                    onChangeText={setDuracao}
+                    keyboardType="numeric"
+                  />
+                </View>
+                
+                <View style={styles.halfInput}>
+                  <Text style={styles.label}>Distância (km)</Text>
+                  <TextInput
+                    style={[styles.input, webInputExtraStyle as any]}
+                    placeholder="Ex: 5.2"
                     placeholderTextColor="#aaa"
-                    value={state}
-                    onChangeText={setState}
-                    maxLength={2}
-                    autoCapitalize="characters"
-                />
+                    value={distancia}
+                    onChangeText={setDistancia}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity style={styles.saveButton} onPress={handleSaveActivity}>
+                <Ionicons name="save-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={styles.saveButtonText}>GUARDAR ATIVIDADE</Text>
+              </TouchableOpacity>
             </View>
-          </View>
 
-          <Text style={styles.label}>Duração (minutos)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Ex: 45"
-            placeholderTextColor="#aaa"
-            keyboardType="numeric"
-            value={duration}
-            onChangeText={setDuration}
-          />
-
-          {distance > 0 && (
-            <View style={styles.infoBox}>
-                <Text style={styles.infoText}>📍 Distância Rastreada: {distance} km</Text>
-            </View>
-          )}
-
-          <TouchableOpacity
-            style={[styles.button, loading && { opacity: 0.7 }]}
-            onPress={handleSave}
-            disabled={loading}
-          >
-            <Text style={styles.buttonText}>
-              {loading ? "Salvando..." : "Salvar Atividade"}
-            </Text>
-          </TouchableOpacity>
-        </ScrollView>
-      </LinearGradient>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </View>
     </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    paddingTop: 50,
-    paddingHorizontal: 20,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#fff",
-    textAlign: "center",
-    marginBottom: 20,
-  },
-  sectionTitle: {
-    color: '#aaa',
-    textAlign: 'center',
-    marginVertical: 15,
-    fontSize: 14
-  },
+  background: { flex: 1, resizeMode: "cover", width: "100%", height: "100%" },
+  overlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.65)" },
+  scrollContainer: { flexGrow: 1, paddingHorizontal: 20, paddingTop: 50, paddingBottom: 30 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 20 },
+  backButton: { padding: 5 },
+  title: { color: "#FFFFFF", fontSize: 22, fontWeight: "bold" },
+  
   gpsButton: {
-    backgroundColor: '#16a34a', // Verde
-    paddingVertical: 18,
-    borderRadius: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
+    backgroundColor: "#22c55e",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 15,
+    borderRadius: 15,
     marginBottom: 10,
-    elevation: 5,
-    shadowColor: '#000',
-    shadowOpacity: 0.3,
-    shadowRadius: 5
+    elevation: 4,
   },
-  gpsButtonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-    letterSpacing: 1
-  },
-  label: {
-    fontSize: 15,
-    color: "#ddd",
-    marginBottom: 6,
-    marginTop: 10,
-    fontWeight: "600",
-  },
-  input: {
+  gpsButtonText: { color: "#fff", fontWeight: "bold", fontSize: 16, marginLeft: 10 },
+  successText: { color: "#4ade80", textAlign: "center", marginBottom: 20, fontWeight: "bold" },
+
+  formContainer: {
+    width: "100%",
+    backgroundColor: "rgba(255,255,255,0.1)",
+    padding: 20,
+    borderRadius: 20,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.2)",
-    borderRadius: 12,
-    paddingHorizontal: 15,
-    paddingVertical: 14,
-    fontSize: 16,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    color: "#fff",
   },
-  inputText: {
-    fontSize: 16,
-    color: "#fff",
+  label: { color: "#EEEEEE", fontSize: 14, marginBottom: 8, marginLeft: 4, fontWeight: "600" },
+  input: {
+    width: "100%", height: 50, borderWidth: 1, borderColor: "rgba(255,255,255,0.3)",
+    borderRadius: 12, backgroundColor: "rgba(0,0,0,0.3)", paddingHorizontal: 15,
+    color: "#FFFFFF", fontSize: 16, marginBottom: 20,
   },
-  optionContainer: {
-    backgroundColor: "rgba(30,30,30,0.9)",
-    borderRadius: 12,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.1)",
+  row: { flexDirection: "row", justifyContent: "space-between" },
+  halfInput: { width: "48%" },
+  
+  saveButton: {
+    width: "100%", backgroundColor: "#1e4db7", flexDirection: "row", borderRadius: 25,
+    paddingVertical: 15, alignItems: "center", justifyContent: "center", marginTop: 10,
   },
-  optionItem: {
-    paddingVertical: 14,
-    paddingHorizontal: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.1)",
-  },
-  optionText: {
-    color: "#fff",
-    fontSize: 16,
-  },
-  infoBox: {
-    backgroundColor: 'rgba(37, 99, 235, 0.2)',
-    padding: 15,
-    borderRadius: 10,
-    marginTop: 20,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(37, 99, 235, 0.5)'
-  },
-  infoText: {
-    color: '#60a5fa',
-    fontWeight: 'bold',
-    fontSize: 16
-  },
-  button: {
-    backgroundColor: "#2563eb",
-    paddingVertical: 16,
-    borderRadius: 30,
-    alignItems: "center",
-    marginTop: 30,
-    marginBottom: 40
-  },
-  buttonText: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "bold",
-  },
+  saveButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "bold" },
 });

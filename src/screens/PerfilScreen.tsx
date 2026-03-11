@@ -1,361 +1,248 @@
-import { Ionicons } from "@expo/vector-icons";
-import * as ImagePicker from "expo-image-picker";
-import { LinearGradient } from "expo-linear-gradient";
-import { updatePassword, User } from "firebase/auth";
-import { get, ref, set } from "firebase/database";
-import React, { useEffect, useState } from "react";
+import { Ionicons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onValue, ref, update } from 'firebase/database';
+import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
   ImageBackground,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-} from "react-native";
-import MaskInput from "react-native-mask-input";
-import { auth, database } from "../../services/connectionFirebase";
+  View
+} from 'react-native';
+import { auth, database } from '../../services/connectionFirebase';
 
 export default function PerfilScreen() {
-  const user = auth.currentUser;
+  const [loading, setLoading] = useState(true);
+  const [isEditing, setIsEditing] = useState(false);
+  
+  // Dados do Usuário
+  const [fullName, setFullName] = useState('');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [uidLogado, setUidLogado] = useState(''); // Guarda o UID de forma segura
 
-  const [fullName, setFullName] = useState("");
-  const [username, setUsername] = useState("");
-  const [email, setEmail] = useState(user?.email || "");
-  const [phone, setPhone] = useState("");
-  const [city, setCity] = useState("");
-  const [dateOfBirth, setDateOfBirth] = useState("");
-  const [gender, setGender] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [photo, setPhoto] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [focusedField, setFocusedField] = useState<string | null>(null);
+  // Estatísticas
+  const [totalKm, setTotalKm] = useState(0);
+  const [totalMinutos, setTotalMinutos] = useState(0);
+
+  const navigation = useNavigation<any>();
 
   useEffect(() => {
-    const carregarDados = async () => {
-      if (!user) return;
-      try {
+    // 1. OBRIGA o app a esperar o Firebase confirmar quem é o utilizador logado
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setUidLogado(user.uid);
+        setEmail(user.email || '');
+
+        // 2. Agora sim, com a certeza absoluta do utilizador, escutamos o Banco de Dados
         const userRef = ref(database, `users/${user.uid}`);
-        const snapshot = await get(userRef);
-        if (snapshot.exists()) {
-          const data = snapshot.val();
-          setFullName(data.fullName || "");
-          setUsername(data.username || "");
-          setEmail(data.email || user.email || "");
-          setPhone(data.phone || "");
-          setCity(data.city || "");
-          setDateOfBirth(data.dateOfBirth || "");
-          setGender(data.gender || "");
-          setPhoto(data.photo || null);
-        }
-      } catch {
-        Alert.alert("Erro", "Não foi possível carregar seus dados.");
+        
+        const unsubscribeDB = onValue(userRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.val();
+            
+            setFullName(data.fullName || 'Usuário Sem Nome');
+            setUsername(data.username || 'sem_user');
+
+            // Calcula KM e Minutos
+            if (data.atividades) {
+              let km = 0;
+              let min = 0;
+              Object.values(data.atividades).forEach((ativ: any) => {
+                km += Number(ativ.distancia || 0);
+                min += Number(ativ.duracao || 0);
+              });
+              setTotalKm(km);
+              setTotalMinutos(min);
+            } else {
+              setTotalKm(0);
+              setTotalMinutos(0);
+            }
+          } else {
+            // Se o nó do utilizador não existir no banco (conta antiga/incompleta)
+            setFullName('Novo Explorador');
+            setUsername('user_' + user.uid.substring(0, 5));
+          }
+          setLoading(false); // Só tira o loading quando tiver a certeza que carregou
+        }, (error) => {
+          Alert.alert('Erro de Leitura', 'O Firebase bloqueou o acesso: ' + error.message);
+          setLoading(false);
+        });
+
+        // Limpa a escuta do banco de dados quando o auth mudar
+        return () => unsubscribeDB();
+
+      } else {
+        // Se não houver utilizador, manda pro login
+        setLoading(false);
+        navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
       }
-    };
-    carregarDados();
-  }, [user]);
-
-  const escolherImagem = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Permissão negada", "Precisamos de acesso às suas fotos.");
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.8,
     });
 
-    if (!result.canceled && result.assets.length > 0) {
-      setPhoto(result.assets[0].uri);
-    }
-  };
+    // Limpa a escuta de Autenticação quando o ecrã fechar
+    return () => unsubscribeAuth();
+  }, [navigation]);
 
-  const salvarDados = async () => {
-    if (!user) return;
-
-    if (!fullName || !username || !dateOfBirth || !gender || !city) {
-      Alert.alert("Atenção", "Preencha todos os campos obrigatórios.");
+  const handleSaveProfile = async () => {
+    if (!fullName || !username) {
+      Alert.alert('Atenção', 'Nome e Username não podem ficar vazios.');
       return;
     }
+    if (!uidLogado) return;
 
-    setLoading(true);
     try {
-      const userRef = ref(database, `users/${user.uid}`);
-      await set(userRef, {
+      const userRef = ref(database, `users/${uidLogado}`);
+      await update(userRef, {
         fullName,
         username,
-        email,
-        phone,
-        city,
-        dateOfBirth,
-        gender,
-        photo,
       });
-
-      if (newPassword) {
-        await updatePassword(user as User, newPassword);
-        setNewPassword("");
-      }
-
-      Alert.alert("Sucesso", "Dados atualizados com sucesso!");
-    } catch {
-      Alert.alert("Erro", "Não foi possível salvar os dados.");
-    } finally {
-      setLoading(false);
+      setIsEditing(false);
+      Alert.alert('Sucesso', 'O seu perfil foi atualizado!');
+    } catch (error: any) {
+      Alert.alert('Erro', 'Falha ao atualizar perfil: ' + error.message);
     }
   };
 
-  return (
-    <ImageBackground
-      source={require("../../assets/images/Azulao.png")}
-      resizeMode="cover"
-      style={{ flex: 1 }}
-    >
-      {/* ✅ MESMA TONALIDADE DO HOME */}
-      <LinearGradient
-        colors={[
-          "rgba(0,0,0,0.8)",
-          "rgba(0,0,0,0.3)",
-          "rgba(0,0,0,0.8)",
-        ]}
-        style={{ flex: 1 }}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={{ flex: 1 }}
-        >
-          <ScrollView
-            contentContainerStyle={styles.container}
-            showsVerticalScrollIndicator={false}
-          >
-            {/* HEADER */}
-            <View style={styles.header}>
-              <TouchableOpacity onPress={escolherImagem}>
-                {photo ? (
-                  <Image source={{ uri: photo }} style={styles.avatar} />
-                ) : (
-                  <View style={styles.avatarPlaceholder}>
-                    <Ionicons name="camera-outline" size={40} color="#fff" />
-                  </View>
-                )}
-              </TouchableOpacity>
+  const handleLogout = () => {
+    Alert.alert('Sair da Conta', 'Tem certeza que deseja sair?', [
+      { text: 'Cancelar', style: 'cancel' },
+      { 
+        text: 'Sair', 
+        style: 'destructive', 
+        onPress: async () => {
+          try {
+            await signOut(auth);
+            // O onAuthStateChanged lá em cima vai detetar o logout e redirecionar sozinho!
+          } catch (error) {
+            Alert.alert('Erro', 'Não foi possível fazer logout.');
+          }
+        } 
+      },
+    ]);
+  };
 
-              <Text style={styles.title}>Meu Perfil</Text>
-              <Text style={styles.subtitle}>
-                Gerencie suas informações pessoais
-              </Text>
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#2563eb" />
+        <Text style={{ color: '#aaa', marginTop: 15 }}>A sincronizar perfil...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <ImageBackground source={require('../../assets/images/Azulao.png')} style={styles.background}>
+      <LinearGradient colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.9)']} style={styles.overlay}>
+        
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+            <Ionicons name="arrow-back" size={28} color="#fff" />
+          </TouchableOpacity>
+          <Text style={styles.title}>Meu Perfil</Text>
+          <TouchableOpacity onPress={handleLogout} style={styles.backButton}>
+            <Ionicons name="log-out-outline" size={28} color="#ef4444" />
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          
+          <View style={styles.avatarContainer}>
+            <View style={styles.avatarCircle}>
+              <Text style={styles.avatarText}>{fullName ? fullName.charAt(0).toUpperCase() : 'U'}</Text>
+            </View>
+            <Text style={styles.usernameText}>@{username}</Text>
+          </View>
+
+          <View style={styles.statsContainer}>
+            <View style={styles.statBox}>
+              <Ionicons name="resize" size={24} color="#2563eb" />
+              <Text style={styles.statValue}>{totalKm.toFixed(1)} km</Text>
+              <Text style={styles.statLabel}>Percorridos</Text>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.statBox}>
+              <Ionicons name="time" size={24} color="#22c55e" />
+              <Text style={styles.statValue}>{totalMinutos} min</Text>
+              <Text style={styles.statLabel}>de Atividade</Text>
+            </View>
+          </View>
+
+          <View style={styles.formContainer}>
+            <View style={styles.formHeader}>
+              <Text style={styles.formTitle}>Informações Pessoais</Text>
+              <TouchableOpacity onPress={() => setIsEditing(!isEditing)}>
+                <Ionicons name={isEditing ? "close-circle" : "pencil"} size={24} color="#aaa" />
+              </TouchableOpacity>
             </View>
 
-            {/* FORM */}
-            <Field
-              label="Nome Completo"
+            <Text style={styles.label}>Nome Completo</Text>
+            <TextInput
+              style={[styles.input, isEditing ? styles.inputEditable : null]}
               value={fullName}
               onChangeText={setFullName}
-              focused={focusedField === "fullName"}
-              onFocus={() => setFocusedField("fullName")}
-              onBlur={() => setFocusedField(null)}
+              editable={isEditing}
+              placeholderTextColor="#888"
             />
 
-            <Field
-              label="Nome de Usuário"
+            <Text style={styles.label}>Nome de Usuário</Text>
+            <TextInput
+              style={[styles.input, isEditing ? styles.inputEditable : null]}
               value={username}
               onChangeText={setUsername}
-              focused={focusedField === "username"}
-              onFocus={() => setFocusedField("username")}
-              onBlur={() => setFocusedField(null)}
+              editable={isEditing}
+              placeholderTextColor="#888"
+              autoCapitalize="none"
             />
 
-            <Field label="Email" value={email} editable={false} style={{ opacity: 0.6 }} />
-
-            <Text style={styles.label}>Telefone</Text>
-            <MaskInput
-              value={phone}
-              onChangeText={setPhone}
-              mask={[
-                "(",
-                /\d/,
-                /\d/,
-                ")",
-                " ",
-                /\d/,
-                /\d/,
-                /\d/,
-                /\d/,
-                /\d/,
-                "-",
-                /\d/,
-                /\d/,
-                /\d/,
-                /\d/,
-              ]}
-              keyboardType="phone-pad"
-              style={[
-                styles.input,
-                focusedField === "phone" && styles.inputFocused,
-              ]}
-              placeholder="(00) 00000-0000"
-              placeholderTextColor="#aaa"
-              onFocus={() => setFocusedField("phone")}
-              onBlur={() => setFocusedField(null)}
+            <Text style={styles.label}>E-mail (Não editável)</Text>
+            <TextInput
+              style={[styles.input, { color: '#666' }]}
+              value={email}
+              editable={false}
             />
 
-            <Field
-              label="Cidade"
-              value={city}
-              onChangeText={setCity}
-              focused={focusedField === "city"}
-              onFocus={() => setFocusedField("city")}
-              onBlur={() => setFocusedField(null)}
-            />
+            {isEditing && (
+              <TouchableOpacity style={styles.saveButton} onPress={handleSaveProfile}>
+                <Text style={styles.saveButtonText}>SALVAR ALTERAÇÕES</Text>
+              </TouchableOpacity>
+            )}
+          </View>
 
-            <Text style={styles.label}>Data de Nascimento</Text>
-            <MaskInput
-              value={dateOfBirth}
-              onChangeText={setDateOfBirth}
-              mask={[/\d/, /\d/, "/", /\d/, /\d/, "/", /\d/, /\d/, /\d/, /\d/]}
-              keyboardType="numeric"
-              style={[
-                styles.input,
-                focusedField === "date" && styles.inputFocused,
-              ]}
-              placeholder="DD/MM/AAAA"
-              placeholderTextColor="#aaa"
-              onFocus={() => setFocusedField("date")}
-              onBlur={() => setFocusedField(null)}
-            />
-
-            <Field
-              label="Sexo"
-              value={gender}
-              onChangeText={setGender}
-              focused={focusedField === "gender"}
-              onFocus={() => setFocusedField("gender")}
-              onBlur={() => setFocusedField(null)}
-            />
-
-            <Field
-              label="Nova Senha"
-              value={newPassword}
-              onChangeText={setNewPassword}
-              secureTextEntry
-              focused={focusedField === "password"}
-              onFocus={() => setFocusedField("password")}
-              onBlur={() => setFocusedField(null)}
-            />
-
-            {/* BOTÃO */}
-            <TouchableOpacity
-              style={[styles.button, loading && { opacity: 0.7 }]}
-              onPress={salvarDados}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <>
-                  <Ionicons name="save-outline" size={20} color="#fff" />
-                  <Text style={styles.buttonText}>Salvar Alterações</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </ScrollView>
-        </KeyboardAvoidingView>
+        </ScrollView>
       </LinearGradient>
     </ImageBackground>
   );
 }
 
-function Field({ label, focused, style, ...props }: any) {
-  return (
-    <View style={{ marginBottom: 18 }}>
-      <Text style={styles.label}>{label}</Text>
-      <TextInput
-        {...props}
-        style={[styles.input, focused && styles.inputFocused, style]}
-        placeholderTextColor="#aaa"
-      />
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
-  container: {
-    padding: 20,
-    paddingBottom: 50,
-  },
-  header: {
-    alignItems: "center",
-    marginBottom: 25,
-    marginTop: 10,
-  },
-  avatar: {
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    borderWidth: 3,
-    borderColor: "#2563eb",
-  },
-  avatarPlaceholder: {
-    width: 110,
-    height: 110,
-    borderRadius: 55,
-    borderWidth: 2,
-    borderColor: "#2563eb",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "rgba(255,255,255,0.1)",
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: "700",
-    color: "#fff",
-    marginTop: 12,
-  },
-  subtitle: {
-    fontSize: 14,
-    color: "#ccc",
-    marginTop: 4,
-  },
-  label: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#ccc",
-    marginBottom: 6,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.2)",
-    borderRadius: 12,
-    padding: 12,
-    fontSize: 16,
-    backgroundColor: "rgba(255,255,255,0.1)",
-    color: "#fff",
-  },
-  inputFocused: {
-    borderColor: "#1e4db7",
-  },
-  button: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#2563eb",
-    paddingVertical: 14,
-    borderRadius: 30,
-    marginTop: 30,
-  },
-  buttonText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 16,
-    marginLeft: 6,
-  },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#121212' },
+  background: { flex: 1, resizeMode: 'cover' },
+  overlay: { flex: 1 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 50, paddingHorizontal: 20, paddingBottom: 20 },
+  backButton: { padding: 5 },
+  title: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
+  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
+  avatarContainer: { alignItems: 'center', marginBottom: 30 },
+  avatarCircle: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#2563eb', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#fff', elevation: 5 },
+  avatarText: { color: '#fff', fontSize: 40, fontWeight: 'bold' },
+  usernameText: { color: '#aaa', fontSize: 16, marginTop: 10, fontWeight: '600' },
+  statsContainer: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, padding: 20, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  statBox: { flex: 1, alignItems: 'center' },
+  divider: { width: 1, backgroundColor: 'rgba(255,255,255,0.2)', marginHorizontal: 15 },
+  statValue: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginTop: 8 },
+  statLabel: { color: '#aaa', fontSize: 12, marginTop: 4 },
+  formContainer: { backgroundColor: 'rgba(0,0,0,0.5)', padding: 25, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
+  formHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
+  formTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  label: { color: '#bbb', fontSize: 13, marginBottom: 5, marginLeft: 5 },
+  input: { backgroundColor: 'rgba(255,255,255,0.05)', color: '#fff', borderRadius: 12, padding: 15, fontSize: 16, marginBottom: 15, borderWidth: 1, borderColor: 'transparent' },
+  inputEditable: { borderColor: '#2563eb', backgroundColor: 'rgba(37, 99, 235, 0.1)' },
+  saveButton: { backgroundColor: '#2563eb', borderRadius: 25, paddingVertical: 15, alignItems: 'center', marginTop: 10 },
+  saveButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
 });

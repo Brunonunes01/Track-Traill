@@ -1,3 +1,4 @@
+// src/screens/CartScreen.tsx
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import React from "react";
@@ -111,7 +112,7 @@ const styles = StyleSheet.create({
   },
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.75)", // 🔥 MESMA tonalidade da Home
+    backgroundColor: "rgba(0,0,0,0.75)", 
     padding: 15,
   },
   empty: {

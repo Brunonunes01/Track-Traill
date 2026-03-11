@@ -113,7 +113,6 @@ export default function PlansScreen() {
         source={require("../../assets/images/Azulao.png")}
         style={{ flex: 1 }}
       >
-        {/* ✅ MESMA TONALIDADE DA AtividadesScreen */}
         <LinearGradient
           colors={[
             "rgba(0,0,0,0.8)",
@@ -134,7 +133,6 @@ export default function PlansScreen() {
       resizeMode="cover"
       style={{ flex: 1 }}
     >
-      {/* ✅ MESMA TONALIDADE DA AtividadesScreen */}
       <LinearGradient
         colors={[
           "rgba(0,0,0,0.8)",
