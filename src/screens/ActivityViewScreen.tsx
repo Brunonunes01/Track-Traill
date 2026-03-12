@@ -10,16 +10,24 @@ export default function ActivityViewScreen() {
     const navigation = useNavigation();
     const { atividade }: any = route.params;
 
-    // Verifica se tem rota gravada
+    // Verifica se tem rota gravada válida
     const hasRoute = atividade.rota && atividade.rota.length > 0;
     
     // Pega o ponto inicial para centralizar o mapa
     const initialRegion = hasRoute ? {
         latitude: atividade.rota[0].latitude,
         longitude: atividade.rota[0].longitude,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
+        latitudeDelta: 0.015,
+        longitudeDelta: 0.015,
     } : undefined;
+
+    // Formata os segundos vindos do Firebase para MM:SS
+    const formatarDuracao = (totalSegundos: number) => {
+        if (!totalSegundos) return "00:00";
+        const min = Math.floor(totalSegundos / 60);
+        const seg = totalSegundos % 60;
+        return `${min < 10 ? '0' : ''}${min}:${seg < 10 ? '0' : ''}${seg}`;
+    };
 
     return (
         <View style={styles.container}>
@@ -35,20 +43,24 @@ export default function ActivityViewScreen() {
                     >
                         <Polyline
                             coordinates={atividade.rota}
-                            strokeColor="#2563eb"
-                            strokeWidth={4}
+                            strokeColor="#ffd700" // Linha dourada premium
+                            strokeWidth={5}
                         />
-                        <Marker coordinate={atividade.rota[0]} title="Início" pinColor="green" />
-                        <Marker coordinate={atividade.rota[atividade.rota.length - 1]} title="Fim" pinColor="red" />
+                        <Marker coordinate={atividade.rota[0]} title="Início">
+                             <Ionicons name="location" size={40} color="#22c55e" />
+                        </Marker>
+                        <Marker coordinate={atividade.rota[atividade.rota.length - 1]} title="Fim">
+                             <Ionicons name="flag" size={40} color="#ef4444" />
+                        </Marker>
                     </MapView>
                 ) : (
                     <ImageBackground 
-                        source={require('../../assets/images/Corrida.jpg')} 
+                        source={require('../../assets/images/Azulao.png')} 
                         style={styles.placeholderImage}
                     >
                         <View style={styles.noGpsOverlay}>
-                            <Ionicons name="navigate-circle-outline" size={60} color="#fff" />
-                            <Text style={styles.noGpsText}>Sem dados de GPS</Text>
+                            <Ionicons name="map-outline" size={60} color="#ffd700" />
+                            <Text style={styles.noGpsText}>Trajeto GPS não registado</Text>
                         </View>
                     </ImageBackground>
                 )}
@@ -64,40 +76,53 @@ export default function ActivityViewScreen() {
                 <ScrollView showsVerticalScrollIndicator={false}>
                     <View style={styles.titleRow}>
                         <Text style={styles.activityTitle}>{atividade.tipo}</Text>
-                        <Text style={styles.activityDate}>{atividade.data}</Text>
+                        <View style={styles.dateBadge}>
+                            <Text style={styles.activityDate}>{atividade.data}</Text>
+                        </View>
                     </View>
 
                     <View style={styles.statsGrid}>
                         <View style={styles.statBox}>
+                            <Ionicons name="resize" size={20} color="#ffd700" style={{ marginBottom: 5 }} />
                             <Text style={styles.statLabel}>Distância</Text>
                             <Text style={styles.statValue}>{atividade.distancia ?? 0} <Text style={styles.unit}>km</Text></Text>
                         </View>
+                        
+                        <View style={styles.divider} />
+                        
                         <View style={styles.statBox}>
+                            <Ionicons name="time-outline" size={20} color="#ffd700" style={{ marginBottom: 5 }} />
                             <Text style={styles.statLabel}>Duração</Text>
-                            <Text style={styles.statValue}>{atividade.duracao} <Text style={styles.unit}>min</Text></Text>
+                            <Text style={styles.statValue}>{formatarDuracao(atividade.duracao)}</Text>
                         </View>
+                        
+                        <View style={styles.divider} />
+                        
                         <View style={styles.statBox}>
-                            <Text style={styles.statLabel}>Ritmo Médio</Text>
+                            <Ionicons name="flash-outline" size={20} color="#ffd700" style={{ marginBottom: 5 }} />
+                            <Text style={styles.statLabel}>Ritmo</Text>
                             <Text style={styles.statValue}>
                                 {atividade.distancia > 0 
-                                    ? (atividade.duracao / atividade.distancia).toFixed(1) 
-                                    : '--'} <Text style={styles.unit}>min/km</Text>
+                                    ? ((atividade.duracao / 60) / atividade.distancia).toFixed(1) 
+                                    : '--'} <Text style={styles.unit}>/km</Text>
                             </Text>
                         </View>
                     </View>
 
                     <View style={styles.locationBox}>
-                         <Ionicons name="location" size={24} color="#2563eb" />
+                         <View style={styles.iconCircle}>
+                             <Ionicons name="location" size={20} color="#000" />
+                         </View>
                          <View>
-                            <Text style={styles.locationTitle}>Localização</Text>
-                            <Text style={styles.locationText}>{atividade.cidade} - {atividade.estado}</Text>
+                            <Text style={styles.locationTitle}>Local de Registo</Text>
+                            <Text style={styles.locationText}>{atividade.cidade}</Text>
                          </View>
                     </View>
 
-                    <TouchableOpacity style={styles.shareButton} onPress={() => alert('Em breve: Compartilhar no Instagram!')}>
-                        <LinearGradient colors={['#2563eb', '#1d4ed8']} style={styles.gradientBtn}>
-                            <Ionicons name="share-social-outline" size={20} color="#fff" />
-                            <Text style={styles.shareText}>Compartilhar Conquista</Text>
+                    <TouchableOpacity style={styles.shareButton} onPress={() => alert('Em breve: Partilhar no Instagram!')}>
+                        <LinearGradient colors={['#ffd700', '#ca8a04']} style={styles.gradientBtn}>
+                            <Ionicons name="share-social" size={22} color="#000" />
+                            <Text style={styles.shareText}>Partilhar Conquista</Text>
                         </LinearGradient>
                     </TouchableOpacity>
 
@@ -108,38 +133,43 @@ export default function ActivityViewScreen() {
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#121212' },
-    headerContainer: { height: '45%', width: '100%', position: 'relative' },
+    container: { flex: 1, backgroundColor: '#000' },
+    headerContainer: { height: '50%', width: '100%', position: 'relative' },
     map: { ...StyleSheet.absoluteFillObject },
     placeholderImage: { width: '100%', height: '100%' },
-    noGpsOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
-    noGpsText: { color: '#fff', fontSize: 16, marginTop: 10, fontWeight: 'bold' },
-    backButton: { position: 'absolute', top: 50, left: 20, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 20 },
+    noGpsOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
+    noGpsText: { color: '#ffd700', fontSize: 18, marginTop: 10, fontWeight: 'bold' },
+    
+    backButton: { position: 'absolute', top: 50, left: 20, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 50, borderWidth: 1, borderColor: '#333' },
     
     detailsContainer: { 
         flex: 1, 
-        backgroundColor: '#1C1C1C', 
+        backgroundColor: '#121212', 
         marginTop: -30, 
         borderTopLeftRadius: 30, 
         borderTopRightRadius: 30,
         padding: 25,
-        paddingTop: 30
+        paddingTop: 30,
+        elevation: 20
     },
     titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
-    activityTitle: { fontSize: 28, fontWeight: 'bold', color: '#fff', textTransform: 'capitalize' },
-    activityDate: { fontSize: 16, color: '#aaa' },
+    activityTitle: { fontSize: 26, fontWeight: 'bold', color: '#fff', textTransform: 'capitalize' },
+    dateBadge: { backgroundColor: '#1e1e1e', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15, borderWidth: 1, borderColor: '#333' },
+    activityDate: { fontSize: 14, color: '#ffd700', fontWeight: 'bold' },
     
-    statsGrid: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 30 },
-    statBox: { alignItems: 'center' },
-    statLabel: { color: '#888', fontSize: 14, marginBottom: 5 },
-    statValue: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
-    unit: { fontSize: 14, color: '#666', fontWeight: 'normal' },
+    statsGrid: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#1e1e1e', padding: 20, borderRadius: 20, marginBottom: 25, borderWidth: 1, borderColor: '#333' },
+    statBox: { alignItems: 'center', flex: 1 },
+    statLabel: { color: '#888', fontSize: 12, marginBottom: 5, textTransform: 'uppercase', letterSpacing: 1 },
+    statValue: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
+    unit: { fontSize: 14, color: '#aaa', fontWeight: 'normal' },
+    divider: { width: 1, backgroundColor: '#333', marginVertical: 10 },
 
-    locationBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#333', padding: 15, borderRadius: 15, gap: 15, marginBottom: 30 },
+    locationBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e1e1e', padding: 15, borderRadius: 15, gap: 15, marginBottom: 30, borderWidth: 1, borderColor: '#333' },
+    iconCircle: { backgroundColor: '#ffd700', padding: 10, borderRadius: 50 },
     locationTitle: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-    locationText: { color: '#ccc' },
+    locationText: { color: '#aaa', marginTop: 2 },
 
-    shareButton: { borderRadius: 15, overflow: 'hidden' },
+    shareButton: { borderRadius: 15, overflow: 'hidden', elevation: 5 },
     gradientBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 18, gap: 10 },
-    shareText: { color: '#fff', fontSize: 16, fontWeight: 'bold' }
+    shareText: { color: '#000', fontSize: 16, fontWeight: 'bold' }
 });

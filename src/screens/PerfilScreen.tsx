@@ -25,7 +25,7 @@ export default function PerfilScreen() {
   const [fullName, setFullName] = useState('');
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
-  const [uidLogado, setUidLogado] = useState(''); // Guarda o UID de forma segura
+  const [uidLogado, setUidLogado] = useState('');
 
   // Estatísticas
   const [totalKm, setTotalKm] = useState(0);
@@ -34,13 +34,11 @@ export default function PerfilScreen() {
   const navigation = useNavigation<any>();
 
   useEffect(() => {
-    // 1. OBRIGA o app a esperar o Firebase confirmar quem é o utilizador logado
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       if (user) {
         setUidLogado(user.uid);
         setEmail(user.email || '');
 
-        // 2. Agora sim, com a certeza absoluta do utilizador, escutamos o Banco de Dados
         const userRef = ref(database, `users/${user.uid}`);
         
         const unsubscribeDB = onValue(userRef, (snapshot) => {
@@ -50,7 +48,6 @@ export default function PerfilScreen() {
             setFullName(data.fullName || 'Usuário Sem Nome');
             setUsername(data.username || 'sem_user');
 
-            // Calcula KM e Minutos
             if (data.atividades) {
               let km = 0;
               let min = 0;
@@ -65,27 +62,23 @@ export default function PerfilScreen() {
               setTotalMinutos(0);
             }
           } else {
-            // Se o nó do utilizador não existir no banco (conta antiga/incompleta)
             setFullName('Novo Explorador');
             setUsername('user_' + user.uid.substring(0, 5));
           }
-          setLoading(false); // Só tira o loading quando tiver a certeza que carregou
+          setLoading(false);
         }, (error) => {
           Alert.alert('Erro de Leitura', 'O Firebase bloqueou o acesso: ' + error.message);
           setLoading(false);
         });
 
-        // Limpa a escuta do banco de dados quando o auth mudar
         return () => unsubscribeDB();
 
       } else {
-        // Se não houver utilizador, manda pro login
         setLoading(false);
         navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
       }
     });
 
-    // Limpa a escuta de Autenticação quando o ecrã fechar
     return () => unsubscribeAuth();
   }, [navigation]);
 
@@ -118,7 +111,6 @@ export default function PerfilScreen() {
         onPress: async () => {
           try {
             await signOut(auth);
-            // O onAuthStateChanged lá em cima vai detetar o logout e redirecionar sozinho!
           } catch (error) {
             Alert.alert('Erro', 'Não foi possível fazer logout.');
           }
@@ -212,6 +204,18 @@ export default function PerfilScreen() {
                 <Text style={styles.saveButtonText}>SALVAR ALTERAÇÕES</Text>
               </TouchableOpacity>
             )}
+
+            {/* BOTÃO EXCLUSIVO DE ADMIN (Mude o email para o seu email real do Firebase) */}
+            {email === 'brunonunes01@gmail.com' && (
+              <TouchableOpacity 
+                style={{ backgroundColor: '#ef4444', borderRadius: 25, paddingVertical: 15, alignItems: 'center', marginTop: 20, flexDirection: 'row', justifyContent: 'center' }} 
+                onPress={() => navigation.navigate("AdminDashboard")}
+              >
+                <Ionicons name="shield-checkmark" size={20} color="#fff" style={{ marginRight: 8 }} />
+                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>PAINEL DE ADMINISTRAÇÃO</Text>
+              </TouchableOpacity>
+            )}
+
           </View>
 
         </ScrollView>
