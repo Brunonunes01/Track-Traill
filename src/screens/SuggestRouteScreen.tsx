@@ -28,7 +28,6 @@ export default function SuggestRouteScreen() {
   const navigation = useNavigation<any>();
   const mapRef = useRef<MapView>(null);
 
-  const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [startPoint, setStartPoint] = useState<Coordinate | null>(null);
   const [endPoint, setEndPoint] = useState<Coordinate | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
@@ -50,7 +49,6 @@ export default function SuggestRouteScreen() {
         let { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') return;
         let currentLocation = await Location.getCurrentPositionAsync({});
-        setLocation(currentLocation);
         setTimeout(() => {
             mapRef.current?.animateCamera({ center: currentLocation.coords, zoom: 15 });
         }, 300);
@@ -87,7 +85,7 @@ export default function SuggestRouteScreen() {
         setRouteCoordinates([start, end]);
         setDistanciaCalculada('N/A');
       }
-    } catch (error) {
+    } catch {
       setRouteCoordinates([start, end]);
       setDistanciaCalculada('N/A');
     } finally {

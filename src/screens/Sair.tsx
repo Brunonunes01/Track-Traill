@@ -13,13 +13,13 @@ export default function Sair() {
         // Redireciona para a tela de login corretamente
         navigation.getParent()?.reset({
             index: 0,
-            routes: [{ name: "LoginScreen" }],
+            routes: [{ name: "Login" }],
           });          
       })
       .catch((error) => {
         Alert.alert("Erro", "Não foi possível sair: " + error.message);
       });
-  }, []);
+  }, [navigation]);
 
   return null; // Tela em branco, só faz logout
 }

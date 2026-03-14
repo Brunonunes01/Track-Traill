@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
+import * as Location from "expo-location";
 import { onValue, ref, remove, update } from "firebase/database";
 import React, { useEffect, useLayoutEffect, useState } from "react";
 import {
@@ -15,6 +16,12 @@ import {
   View,
 } from "react-native";
 import { auth, database } from "../../services/connectionFirebase";
+import WeatherCard from "../components/WeatherCard";
+
+type WeatherCoordinates = {
+  latitude: number;
+  longitude: number;
+};
 
 export default function DashboardScreen() {
   const [atividades, setAtividades] = useState<any[]>([]);
@@ -27,6 +34,9 @@ export default function DashboardScreen() {
   const [data, setData] = useState("");
   const [duracao, setDuracao] = useState("");
   const [distancia, setDistancia] = useState(""); 
+  const [weatherCoordinates, setWeatherCoordinates] = useState<WeatherCoordinates | null>(null);
+  const [weatherSource, setWeatherSource] = useState<"route" | "gps" | "none">("none");
+  const [resolvingWeatherCoordinates, setResolvingWeatherCoordinates] = useState(true);
 
   const navigation = useNavigation<any>();
   const user = auth.currentUser;
@@ -60,6 +70,75 @@ export default function DashboardScreen() {
     });
     return () => unsubscribe();
   }, [user]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Primeiro tentamos usar a rota mais recente já gravada no app.
+    const routeAnchor = atividades.find((item) => {
+      const firstPoint = item?.rota?.[0];
+      return (
+        Array.isArray(item?.rota) &&
+        item.rota.length > 0 &&
+        typeof firstPoint?.latitude === "number" &&
+        typeof firstPoint?.longitude === "number"
+      );
+    })?.rota?.[0];
+
+    if (routeAnchor) {
+      setWeatherCoordinates({
+        latitude: routeAnchor.latitude,
+        longitude: routeAnchor.longitude,
+      });
+      setWeatherSource("route");
+      setResolvingWeatherCoordinates(false);
+      return;
+    }
+
+    // Se não houver rota, usamos o GPS atual para manter o card útil na dashboard.
+    const resolveCurrentLocation = async () => {
+      try {
+        setResolvingWeatherCoordinates(true);
+        const currentPermission = await Location.getForegroundPermissionsAsync();
+        const permission =
+          currentPermission.status === "granted"
+            ? currentPermission
+            : await Location.requestForegroundPermissionsAsync();
+
+        if (permission.status !== "granted") {
+          if (!cancelled) {
+            setWeatherCoordinates(null);
+            setWeatherSource("none");
+          }
+          return;
+        }
+
+        const currentLocation = await Location.getCurrentPositionAsync({});
+        if (!cancelled) {
+          setWeatherCoordinates({
+            latitude: currentLocation.coords.latitude,
+            longitude: currentLocation.coords.longitude,
+          });
+          setWeatherSource("gps");
+        }
+      } catch {
+        if (!cancelled) {
+          setWeatherCoordinates(null);
+          setWeatherSource("none");
+        }
+      } finally {
+        if (!cancelled) {
+          setResolvingWeatherCoordinates(false);
+        }
+      }
+    };
+
+    resolveCurrentLocation();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [atividades]);
 
   const capitalize = (text?: string) =>
     text ? text.charAt(0).toUpperCase() + text.slice(1) : "Atividade";
@@ -137,6 +216,31 @@ export default function DashboardScreen() {
           <View style={styles.headerRow}>
              <Text style={styles.title}>Minhas Aventuras</Text>
              <Text style={styles.countText}>{atividades.length} registro(s)</Text>
+          </View>
+
+          <View style={styles.weatherSection}>
+            <Text style={styles.weatherTitle}>Clima da Rota</Text>
+
+            {weatherCoordinates ? (
+              <WeatherCard
+                latitude={weatherCoordinates.latitude}
+                longitude={weatherCoordinates.longitude}
+              />
+            ) : (
+              <View style={styles.weatherFallback}>
+                <Text style={styles.weatherFallbackText}>
+                  {resolvingWeatherCoordinates
+                    ? "Localizando coordenadas para carregar o clima..."
+                    : "Clima indisponível no momento. Permita localização ou registre uma rota para ver o clima aqui."}
+                </Text>
+              </View>
+            )}
+
+            {weatherSource !== "none" && (
+              <Text style={styles.weatherSourceText}>
+                Fonte: {weatherSource === "route" ? "última rota registrada" : "localização atual"}
+              </Text>
+            )}
           </View>
 
           <FlatList
@@ -241,7 +345,7 @@ export default function DashboardScreen() {
           {/* BARRA INFERIOR FLUTUANTE ATUALIZADA COM 4 BOTÕES */}
           <View style={styles.bottomBar}>
             {/* NOVO BOTÃO: Ir para o Radar de Rotas (Mapa) */}
-            <TouchableOpacity onPress={() => navigation.navigate("Home")}>
+            <TouchableOpacity onPress={() => navigation.navigate("Inicial")}>
               <Ionicons name="compass-outline" size={28} color="#666" />
             </TouchableOpacity>
 
@@ -270,6 +374,11 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   title: { fontSize: 24, fontWeight: "bold", color: "#fff" },
   countText: { color: '#aaa', fontSize: 14 },
+  weatherSection: { marginBottom: 10 },
+  weatherTitle: { color: '#fff', fontSize: 16, fontWeight: '700', marginBottom: 10 },
+  weatherFallback: { backgroundColor: 'rgba(0,0,0,0.45)', borderWidth: 1, borderColor: '#444', borderRadius: 14, padding: 14, marginBottom: 12 },
+  weatherFallbackText: { color: '#bbb', fontSize: 14, lineHeight: 20 },
+  weatherSourceText: { color: '#888', fontSize: 12, marginBottom: 10 },
   
   card: { marginBottom: 20, borderRadius: 16, overflow: 'hidden', elevation: 5 },
   cardBg: { height: 180, justifyContent: 'flex-end' },

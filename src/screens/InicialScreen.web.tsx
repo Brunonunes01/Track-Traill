@@ -95,7 +95,7 @@ export default function InicialScreen() {
 
     useEffect(() => {
       map.setView(data.coords, data.zoom, { animate: true });
-    }, [data]);
+    }, [data, map]);
 
     return null;
   }

@@ -18,7 +18,7 @@ import AtividadesScreen from "../screens/AtividadesScreen";
 import CartScreen from "../screens/CartScreen";
 import ConfiguracoesScreen from "../screens/ConfiguracoesScreen";
 import DashboardScreen from "../screens/DashboardScreen";
-import InicialScreen from "../screens/InicialScreen.web";
+import HomeScreen from "../screens/HomeScreen";
 import PerfilScreen from "../screens/PerfilScreen";
 import PlansScreen from "../screens/PlansScreen";
 
@@ -145,7 +145,7 @@ export default function DrawerNavigator() {
       {/* MAPA / INICIAL */}
 <Drawer.Screen
   name="Inicial"
-  component={InicialScreen}
+  component={HomeScreen}
   options={{
     drawerLabel: "Mapa",
     headerTitle: "Mapa de Lugares",

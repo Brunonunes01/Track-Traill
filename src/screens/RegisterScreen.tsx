@@ -45,6 +45,7 @@ export default function RegisterScreen({ navigation }: any) {
         fullName,
         username,
         email,
+        role: "user", // Novo usuário entra sem privilégios administrativos.
       });
 
       setFullName("");

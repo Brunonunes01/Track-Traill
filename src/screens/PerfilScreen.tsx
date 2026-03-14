@@ -16,6 +16,7 @@ import {
   View
 } from 'react-native';
 import { auth, database } from '../../services/connectionFirebase';
+import { ensureUserRole, resolveUserRole } from '../../services/adminService';
 
 export default function PerfilScreen() {
   const [loading, setLoading] = useState(true);
@@ -26,6 +27,7 @@ export default function PerfilScreen() {
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [uidLogado, setUidLogado] = useState('');
+  const [role, setRole] = useState<'user' | 'admin'>('user');
 
   // Estatísticas
   const [totalKm, setTotalKm] = useState(0);
@@ -38,6 +40,7 @@ export default function PerfilScreen() {
       if (user) {
         setUidLogado(user.uid);
         setEmail(user.email || '');
+        ensureUserRole(user.uid, user.email || '');
 
         const userRef = ref(database, `users/${user.uid}`);
         
@@ -47,6 +50,7 @@ export default function PerfilScreen() {
             
             setFullName(data.fullName || 'Usuário Sem Nome');
             setUsername(data.username || 'sem_user');
+            setRole(resolveUserRole(data, user.email || '') as 'user' | 'admin');
 
             if (data.atividades) {
               let km = 0;
@@ -64,6 +68,7 @@ export default function PerfilScreen() {
           } else {
             setFullName('Novo Explorador');
             setUsername('user_' + user.uid.substring(0, 5));
+            setRole('user');
           }
           setLoading(false);
         }, (error) => {
@@ -111,7 +116,7 @@ export default function PerfilScreen() {
         onPress: async () => {
           try {
             await signOut(auth);
-          } catch (error) {
+          } catch {
             Alert.alert('Erro', 'Não foi possível fazer logout.');
           }
         } 
@@ -149,6 +154,9 @@ export default function PerfilScreen() {
               <Text style={styles.avatarText}>{fullName ? fullName.charAt(0).toUpperCase() : 'U'}</Text>
             </View>
             <Text style={styles.usernameText}>@{username}</Text>
+            <View style={[styles.roleBadge, role === 'admin' ? styles.roleBadgeAdmin : styles.roleBadgeUser]}>
+              <Text style={styles.roleText}>{role.toUpperCase()}</Text>
+            </View>
           </View>
 
           <View style={styles.statsContainer}>
@@ -205,8 +213,8 @@ export default function PerfilScreen() {
               </TouchableOpacity>
             )}
 
-            {/* BOTÃO EXCLUSIVO DE ADMIN (Mude o email para o seu email real do Firebase) */}
-            {email === 'brunonunes01@gmail.com' && (
+            {/* Botão exclusivo para contas com role admin. */}
+            {role === 'admin' && (
               <TouchableOpacity 
                 style={{ backgroundColor: '#ef4444', borderRadius: 25, paddingVertical: 15, alignItems: 'center', marginTop: 20, flexDirection: 'row', justifyContent: 'center' }} 
                 onPress={() => navigation.navigate("AdminDashboard")}
@@ -236,6 +244,10 @@ const styles = StyleSheet.create({
   avatarCircle: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#2563eb', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#fff', elevation: 5 },
   avatarText: { color: '#fff', fontSize: 40, fontWeight: 'bold' },
   usernameText: { color: '#aaa', fontSize: 16, marginTop: 10, fontWeight: '600' },
+  roleBadge: { marginTop: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5 },
+  roleBadgeAdmin: { backgroundColor: 'rgba(239, 68, 68, 0.25)', borderWidth: 1, borderColor: '#ef4444' },
+  roleBadgeUser: { backgroundColor: 'rgba(37, 99, 235, 0.25)', borderWidth: 1, borderColor: '#2563eb' },
+  roleText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   statsContainer: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, padding: 20, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
   statBox: { flex: 1, alignItems: 'center' },
   divider: { width: 1, backgroundColor: 'rgba(255,255,255,0.2)', marginHorizontal: 15 },

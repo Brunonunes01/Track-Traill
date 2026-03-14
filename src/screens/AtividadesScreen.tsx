@@ -44,7 +44,6 @@ export default function AtividadesScreen() {
   const mapRef = useRef<MapView>(null);
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
 
-  const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [caminhoUsuario, setCaminhoUsuario] = useState<Coordinate[]>([]);
   
   const [isRecording, setIsRecording] = useState(false);
@@ -63,7 +62,6 @@ export default function AtividadesScreen() {
         return;
       }
       let currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      setLocation(currentLocation);
       
       const startFocus = rotaGuia?.startPoint || currentLocation.coords;
       mapRef.current?.animateCamera({ center: startFocus, zoom: 16 });
@@ -74,7 +72,7 @@ export default function AtividadesScreen() {
         locationSubscription.current.remove();
       }
     };
-  }, []);
+  }, [rotaGuia?.startPoint]);
 
   // Cronómetro que não para se o app for minimizado
   useEffect(() => {
@@ -123,7 +121,6 @@ export default function AtividadesScreen() {
           return [...caminhoAnterior, novaCoordenada];
         });
         
-        setLocation(loc);
         mapRef.current?.animateCamera({ center: novaCoordenada });
       }
     );
@@ -184,7 +181,7 @@ export default function AtividadesScreen() {
 
               Alert.alert("Sucesso!", "Atividade gravada no seu Dashboard!");
               navigation.navigate("DashboardScreen");
-            } catch (error) {
+            } catch {
               Alert.alert("Erro", "Falha ao gravar.");
             }
           }

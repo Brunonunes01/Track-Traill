@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
 import { ImageBackground, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
+import WeatherCard from '../components/WeatherCard';
 
 export default function ActivityViewScreen() {
     const route = useRoute();
@@ -119,6 +120,19 @@ export default function ActivityViewScreen() {
                          </View>
                     </View>
 
+                    {hasRoute ? (
+                        <WeatherCard
+                            latitude={atividade.rota[0].latitude}
+                            longitude={atividade.rota[0].longitude}
+                        />
+                    ) : (
+                        <View style={styles.noWeatherBox}>
+                            <Text style={styles.noWeatherText}>
+                                Clima indisponível: esta atividade não possui coordenadas de rota.
+                            </Text>
+                        </View>
+                    )}
+
                     <TouchableOpacity style={styles.shareButton} onPress={() => alert('Em breve: Partilhar no Instagram!')}>
                         <LinearGradient colors={['#ffd700', '#ca8a04']} style={styles.gradientBtn}>
                             <Ionicons name="share-social" size={22} color="#000" />
@@ -168,6 +182,8 @@ const styles = StyleSheet.create({
     iconCircle: { backgroundColor: '#ffd700', padding: 10, borderRadius: 50 },
     locationTitle: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
     locationText: { color: '#aaa', marginTop: 2 },
+    noWeatherBox: { backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: '#333', borderRadius: 15, padding: 14, marginBottom: 24 },
+    noWeatherText: { color: '#aaa', fontSize: 14 },
 
     shareButton: { borderRadius: 15, overflow: 'hidden', elevation: 5 },
     gradientBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 18, gap: 10 },

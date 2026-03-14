@@ -9,7 +9,6 @@ interface MapTrackerProps {
 }
 
 export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
-  const [permissionStatus, setPermissionStatus] = useState<string | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
   const [currentLocation, setCurrentLocation] = useState<any>(null);
   const [distance, setDistance] = useState(0);
@@ -28,7 +27,6 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
   useEffect(() => {
     (async () => {
       let { status } = await Location.requestForegroundPermissionsAsync();
-      setPermissionStatus(status);
       
       if (status !== 'granted') {
         Alert.alert('Permissão negada', 'Precisamos do GPS para rastrear sua trilha.');
