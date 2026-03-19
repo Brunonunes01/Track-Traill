@@ -13,7 +13,8 @@
       "bundleIdentifier": "com.bruno.tracktrail",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "O Track & Trail precisa da sua localização para rastrear suas atividades e rotas.",
-        "NSLocationAlwaysUsageDescription": "O Track & Trail precisa da sua localização para rastrear suas atividades mesmo com a tela bloqueada."
+        "NSLocationAlwaysUsageDescription": "O Track & Trail precisa da sua localização para rastrear suas atividades mesmo com a tela bloqueada.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "O Track & Trail usa localização em segundo plano para continuar gravando trilhas durante a atividade."
       }
     },
     "android": {
@@ -23,7 +24,10 @@
       },
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
       ],
       "package": "com.bruno.tracktrail",
       "edgeToEdgeEnabled": true

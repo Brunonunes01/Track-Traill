@@ -1,194 +1,291 @@
-import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute } from '@react-navigation/native';
-import { LinearGradient } from 'expo-linear-gradient';
-import * as Location from 'expo-location';
-import { push, ref, set } from 'firebase/database';
-import React, { useEffect, useRef, useState } from 'react';
+import { Ionicons } from "@expo/vector-icons";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import { LinearGradient } from "expo-linear-gradient";
+import * as Location from "expo-location";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, ImageBackground, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import MapView, { Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import { auth } from "../../services/connectionFirebase";
 import {
-  Alert,
-  Dimensions,
-  ImageBackground,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
-} from 'react-native';
-import MapView, { Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
-import { auth, database } from '../../services/connectionFirebase';
+  ActivityType,
+  ActiveActivitySession,
+  appendForegroundPoint,
+  discardActiveSession,
+  finishActivityTracking,
+  formatDuration,
+  getActiveSession,
+  getAverageSpeedKmh,
+  getSessionDurationSeconds,
+  pauseActivityTracking,
+  resumeActivityTracking,
+  startActivityTracking,
+} from "../services/activityTrackingService";
 
-// IMPEDIR QUE A TELA APAGUE SOZINHA
-import { useKeepAwake } from 'expo-keep-awake';
+type Coordinate = {
+  latitude: number;
+  longitude: number;
+};
 
-type Coordinate = { latitude: number; longitude: number };
+const ACTIVITY_OPTIONS: { label: string; value: ActivityType }[] = [
+  { label: "Bike", value: "bike" },
+  { label: "Corrida", value: "corrida" },
+  { label: "Caminhada", value: "caminhada" },
+  { label: "Trilha", value: "trilha" },
+];
 
-const calcularDistanciaKM = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-  const R = 6371; 
-  const dLat = (lat2 - lat1) * (Math.PI / 180);
-  const dLon = (lon2 - lon1) * (Math.PI / 180);
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+const inferActivityType = (value?: string): ActivityType => {
+  const normalized = (value || "").toLowerCase();
+  if (normalized.includes("bike") || normalized.includes("cicl")) return "bike";
+  if (normalized.includes("corr")) return "corrida";
+  if (normalized.includes("camin")) return "caminhada";
+  return "trilha";
 };
 
 export default function AtividadesScreen() {
-  // Ativa a função que impede o celular de desligar a tela enquanto estiver nesta página
-  useKeepAwake();
-
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const rotaGuia = route.params?.rotaSugerida;
 
   const mapRef = useRef<MapView>(null);
-  const locationSubscription = useRef<Location.LocationSubscription | null>(null);
+  const foregroundSubscription = useRef<Location.LocationSubscription | null>(null);
+  const syncInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [caminhoUsuario, setCaminhoUsuario] = useState<Coordinate[]>([]);
-  
-  const [isRecording, setIsRecording] = useState(false);
-  const [distanciaTotal, setDistanciaTotal] = useState(0); 
-  
-  // Estados do Cronómetro Inteligente (Resistente a bloqueios de tela)
-  const [tempoSegundos, setTempoSegundos] = useState(0);
-  const startTimeRef = useRef<number | null>(null);
-  const tempoAcumuladoRef = useRef<number>(0);
+  const [activityType, setActivityType] = useState<ActivityType>(
+    inferActivityType(rotaGuia?.tipo)
+  );
+  const [session, setSession] = useState<ActiveActivitySession | null>(null);
+  const [loadingSession, setLoadingSession] = useState(true);
+  const [statusMessage, setStatusMessage] = useState<string>("Pronto para iniciar.");
 
-  useEffect(() => {
-    (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permissão Negada', 'Precisamos do GPS para gravar a sua atividade.');
-        return;
-      }
-      let currentLocation = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      
-      const startFocus = rotaGuia?.startPoint || currentLocation.coords;
-      mapRef.current?.animateCamera({ center: startFocus, zoom: 16 });
-    })();
+  const trackedPath: Coordinate[] = useMemo(
+    () =>
+      (session?.points || []).map((point) => ({
+        latitude: point.latitude,
+        longitude: point.longitude,
+      })),
+    [session]
+  );
 
-    return () => {
-      if (locationSubscription.current) {
-        locationSubscription.current.remove();
-      }
-    };
-  }, [rotaGuia?.startPoint]);
+  const durationSeconds = useMemo(() => getSessionDurationSeconds(session), [session]);
+  const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
+  const isRecording = session?.status === "recording";
 
-  // Cronómetro que não para se o app for minimizado
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval>; // <-- A MÁGICA ACONTECE AQUI
-    if (isRecording) {
-      interval = setInterval(() => {
-        if (startTimeRef.current) {
-          const segundosPassados = Math.floor((Date.now() - startTimeRef.current) / 1000);
-          setTempoSegundos(tempoAcumuladoRef.current + segundosPassados);
-        }
-      }, 1000);
+  const stopForegroundWatch = () => {
+    if (foregroundSubscription.current) {
+      foregroundSubscription.current.remove();
+      foregroundSubscription.current = null;
     }
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, [isRecording]);
-
-  const formatarTempo = (segundos: number) => {
-    const min = Math.floor(segundos / 60);
-    const seg = segundos % 60;
-    return `${min < 10 ? '0' : ''}${min}:${seg < 10 ? '0' : ''}${seg}`;
   };
 
-  const handleStart = async () => {
-    setIsRecording(true);
-    startTimeRef.current = Date.now(); // Marca a hora real do relógio do celular
-    
-    locationSubscription.current = await Location.watchPositionAsync(
-      { 
-        accuracy: Location.Accuracy.BestForNavigation, 
-        timeInterval: 3000, 
-        distanceInterval: 5 
+  const startForegroundWatch = useCallback(async () => {
+    stopForegroundWatch();
+
+    foregroundSubscription.current = await Location.watchPositionAsync(
+      {
+        accuracy: Location.Accuracy.Balanced,
+        timeInterval: 4000,
+        distanceInterval: 10,
       },
-      (loc) => {
-        const novaCoordenada = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-        
-        setCaminhoUsuario((caminhoAnterior) => {
-          if (caminhoAnterior.length > 0) {
-            const ultimaCoordenada = caminhoAnterior[caminhoAnterior.length - 1];
-            const distanciaAdicional = calcularDistanciaKM(
-              ultimaCoordenada.latitude, ultimaCoordenada.longitude,
-              novaCoordenada.latitude, novaCoordenada.longitude
-            );
-            setDistanciaTotal((d) => d + distanciaAdicional);
-          }
-          return [...caminhoAnterior, novaCoordenada];
+      async (location) => {
+        const updated = await appendForegroundPoint({
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          timestamp: location.timestamp || Date.now(),
         });
-        
-        mapRef.current?.animateCamera({ center: novaCoordenada });
+
+        if (updated) {
+          setSession(updated);
+          mapRef.current?.animateCamera({
+            center: {
+              latitude: location.coords.latitude,
+              longitude: location.coords.longitude,
+            },
+          });
+        }
       }
     );
-  };
+  }, []);
 
-  const handlePause = () => {
-    setIsRecording(false);
-    
-    // Guarda o tempo que já passou
-    if (startTimeRef.current) {
-      const segundosPassados = Math.floor((Date.now() - startTimeRef.current) / 1000);
-      tempoAcumuladoRef.current += segundosPassados;
-      startTimeRef.current = null;
-    }
+  useEffect(() => {
+    let mounted = true;
 
-    if (locationSubscription.current) {
-      locationSubscription.current.remove();
-      locationSubscription.current = null;
-    }
-  };
+    const bootstrap = async () => {
+      try {
+        const foregroundPermission = await Location.requestForegroundPermissionsAsync();
+        if (foregroundPermission.status !== "granted") {
+          setStatusMessage("Permissão de localização necessária para gravar atividade.");
+          setLoadingSession(false);
+          return;
+        }
 
-  const handleFinish = () => {
-    handlePause();
+        const current = await Location.getCurrentPositionAsync({});
+        if (!mounted) return;
 
-    if (distanciaTotal === 0 && tempoSegundos < 10) {
-      Alert.alert("Atividade muito curta", "Não há dados suficientes para guardar.");
-      setCaminhoUsuario([]);
-      setTempoSegundos(0);
-      tempoAcumuladoRef.current = 0;
+        const startFocus = rotaGuia?.startPoint || current.coords;
+        mapRef.current?.animateCamera({ center: startFocus, zoom: 16 });
+
+        const active = await getActiveSession();
+        if (!mounted) return;
+
+        if (active && active.status !== "finished") {
+          setSession(active);
+          setActivityType(active.activityType);
+          setStatusMessage(
+            active.status === "recording"
+              ? "Atividade em andamento recuperada."
+              : "Atividade pausada recuperada."
+          );
+
+          if (active.trackingMode === "foreground" && active.status === "recording") {
+            await startForegroundWatch();
+          }
+        }
+      } catch {
+        setStatusMessage("Falha ao obter GPS inicial.");
+      } finally {
+        if (mounted) {
+          setLoadingSession(false);
+        }
+      }
+    };
+
+    bootstrap();
+
+    syncInterval.current = setInterval(async () => {
+      const active = await getActiveSession();
+      if (active && active.status !== "finished") {
+        setSession(active);
+      }
+    }, 1500);
+
+    return () => {
+      mounted = false;
+      if (syncInterval.current) {
+        clearInterval(syncInterval.current);
+      }
+      stopForegroundWatch();
+    };
+  }, [rotaGuia?.startPoint, startForegroundWatch]);
+
+  const handleStart = async () => {
+    const user = auth.currentUser;
+    if (!user) {
+      Alert.alert("Erro", "Você precisa estar logado.");
       return;
     }
 
-    Alert.alert(
-      "Finalizar Atividade",
-      `Tem a certeza? \nDistância: ${distanciaTotal.toFixed(2)} km \nTempo: ${formatarTempo(tempoSegundos)}`,
-      [
-        { text: "Continuar a Gravar", style: "cancel", onPress: handleStart },
-        { 
-          text: "Guardar", 
-          style: "default",
-          onPress: async () => {
-            const user = auth.currentUser;
-            if (!user) return;
+    try {
+      const current = await Location.getCurrentPositionAsync({});
+      const startPoint = trackedPath[trackedPath.length - 1] || {
+        latitude: current.coords.latitude,
+        longitude: current.coords.longitude,
+      };
 
-            try {
-              const atividadesRef = ref(database, `users/${user.uid}/atividades`);
-              const novaAtivRef = push(atividadesRef);
+      const response = await startActivityTracking({
+        userId: user.uid,
+        activityType,
+        initialPoint: startPoint,
+      });
 
-            await set(novaAtivRef, {
-                tipo: rotaGuia ? rotaGuia.tipo : 'Caminhada/Livre',
-                cidade: 'Rota Registada pelo GPS',
-                data: new Date().toLocaleDateString('pt-BR'),
-                duracao: tempoSegundos, // Guardamos os SEGUNDOS totais para não zerar
-                distancia: distanciaTotal.toFixed(2),
-                rota: caminhoUsuario, // <-- AQUI ESTÁ A MÁGICA: Guardamos o trajeto!
-                criadoEm: new Date().toISOString()
-              });
+      setSession(response.session);
 
-              Alert.alert("Sucesso!", "Atividade gravada no seu Dashboard!");
-              navigation.navigate("DashboardScreen");
-            } catch {
-              Alert.alert("Erro", "Falha ao gravar.");
-            }
-          }
-        }
-      ]
-    );
+      if (response.mode === "foreground") {
+        await startForegroundWatch();
+        setStatusMessage("Rastreando em foreground. Mantenha o app aberto para melhor precisão.");
+      } else {
+        stopForegroundWatch();
+        setStatusMessage("Rastreando em background. Você pode bloquear a tela.");
+      }
+    } catch (error: any) {
+      Alert.alert("Não foi possível iniciar", error?.message || "Verifique permissões de localização.");
+    }
   };
+
+  const handlePause = async () => {
+    try {
+      const paused = await pauseActivityTracking();
+      stopForegroundWatch();
+      if (paused) {
+        setSession(paused);
+      }
+      setStatusMessage("Atividade pausada.");
+    } catch {
+      Alert.alert("Erro", "Não foi possível pausar.");
+    }
+  };
+
+  const handleResume = async () => {
+    try {
+      const response = await resumeActivityTracking();
+      if (!response) return;
+
+      setSession(response.session);
+      if (response.mode === "foreground") {
+        await startForegroundWatch();
+        setStatusMessage("Retomado em foreground.");
+      } else {
+        stopForegroundWatch();
+        setStatusMessage("Retomado em background.");
+      }
+    } catch (error: any) {
+      Alert.alert("Erro ao retomar", error?.message || "Não foi possível retomar a atividade.");
+    }
+  };
+
+  const handleFinish = async () => {
+    try {
+      stopForegroundWatch();
+      const finished = await finishActivityTracking();
+
+      if (finished.points.length < 2 || getSessionDurationSeconds(finished) < 10) {
+        Alert.alert(
+          "Atividade muito curta",
+          "Não há dados suficientes para gerar uma rota. Deseja descartar?",
+          [
+            { text: "Cancelar", style: "cancel" },
+            {
+              text: "Descartar",
+              style: "destructive",
+              onPress: async () => {
+                await discardActiveSession();
+                setSession(null);
+              },
+            },
+          ]
+        );
+        return;
+      }
+
+      navigation.navigate("ActivitySummary", { session: finished });
+    } catch (error: any) {
+      Alert.alert("Erro", error?.message || "Não foi possível finalizar.");
+    }
+  };
+
+  const handleExit = () => {
+    if (isRecording) {
+      Alert.alert(
+        "Atividade em andamento",
+        "Deseja sair e continuar gravando em background?",
+        [
+          { text: "Cancelar", style: "cancel" },
+          { text: "Sair", onPress: () => navigation.goBack() },
+        ]
+      );
+      return;
+    }
+
+    navigation.goBack();
+  };
+
+  if (loadingSession) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#ffd700" />
+        <Text style={styles.loadingText}>Preparando rastreamento GPS...</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -196,65 +293,118 @@ export default function AtividadesScreen() {
         ref={mapRef}
         style={styles.map}
         provider={PROVIDER_DEFAULT}
-        showsUserLocation={true}
+        showsUserLocation
         showsMyLocationButton={false}
       >
-        {rotaGuia?.rotaCompleta && (
-          <Polyline coordinates={rotaGuia.rotaCompleta} strokeColor="rgba(255, 215, 0, 0.4)" strokeWidth={8} />
-        )}
-        {caminhoUsuario.length > 0 && (
-          <Polyline coordinates={caminhoUsuario} strokeColor="#ef4444" strokeWidth={5} />
-        )}
+        {rotaGuia?.rotaCompleta ? (
+          <Polyline
+            coordinates={rotaGuia.rotaCompleta}
+            strokeColor="rgba(255, 215, 0, 0.35)"
+            strokeWidth={7}
+          />
+        ) : null}
+
+        {trackedPath.length > 1 ? (
+          <Polyline coordinates={trackedPath} strokeColor="#ef4444" strokeWidth={5} />
+        ) : null}
       </MapView>
 
       <View style={styles.topBar}>
-        <TouchableOpacity style={styles.iconButton} onPress={() => { handlePause(); navigation.goBack(); }}>
+        <TouchableOpacity style={styles.iconButton} onPress={handleExit}>
           <Ionicons name="arrow-back" size={28} color="#fff" />
         </TouchableOpacity>
-        
+
         <View style={styles.titleBadge}>
           <Text style={styles.titleText}>
-            {rotaGuia ? `Guiando: ${rotaGuia.titulo}` : "Gravação Livre"}
+            {rotaGuia ? `Guiando: ${rotaGuia.titulo}` : "Rastreamento GPS"}
           </Text>
+          <Text style={styles.statusText}>{statusMessage}</Text>
         </View>
       </View>
 
+      {!session || session.status === "finished" ? (
+        <View style={styles.activityTypeBar}>
+          {ACTIVITY_OPTIONS.map((option) => {
+            const selected = activityType === option.value;
+            return (
+              <TouchableOpacity
+                key={option.value}
+                style={[styles.activityChip, selected ? styles.activityChipSelected : null]}
+                onPress={() => setActivityType(option.value)}
+              >
+                <Text style={[styles.activityChipText, selected ? styles.activityChipTextSelected : null]}>
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ) : null}
+
       <View style={styles.bottomPanel}>
-        <ImageBackground source={require('../../assets/images/Azulao.png')} style={{ flex: 1 }} imageStyle={{ borderTopLeftRadius: 30, borderTopRightRadius: 30 }}>
-          <LinearGradient colors={['rgba(0,0,0,0.85)', 'rgba(0,0,0,0.98)']} style={styles.panelOverlay}>
-            
+        <ImageBackground
+          source={require("../../assets/images/Azulao.png")}
+          style={{ flex: 1 }}
+          imageStyle={{ borderTopLeftRadius: 30, borderTopRightRadius: 30 }}
+        >
+          <LinearGradient colors={["rgba(0,0,0,0.88)", "rgba(0,0,0,0.98)"]} style={styles.panelOverlay}>
             <View style={styles.statsRow}>
               <View style={styles.statBox}>
                 <Text style={styles.statLabel}>TEMPO</Text>
-                <Text style={styles.statValue}>{formatarTempo(tempoSegundos)}</Text>
+                <Text style={styles.statValue}>{formatDuration(durationSeconds)}</Text>
               </View>
               <View style={styles.divider} />
               <View style={styles.statBox}>
                 <Text style={styles.statLabel}>DISTÂNCIA</Text>
-                <Text style={styles.statValue}>{distanciaTotal.toFixed(2)} <Text style={{fontSize: 16}}>km</Text></Text>
+                <Text style={styles.statValue}>
+                  {session?.distanceKm.toFixed(2) || "0.00"} <Text style={{ fontSize: 16 }}>km</Text>
+                </Text>
+              </View>
+              <View style={styles.divider} />
+              <View style={styles.statBox}>
+                <Text style={styles.statLabel}>MÉDIA</Text>
+                <Text style={styles.statValue}>
+                  {averageSpeed.toFixed(1)} <Text style={{ fontSize: 16 }}>km/h</Text>
+                </Text>
               </View>
             </View>
 
             <View style={styles.controlsRow}>
-              {!isRecording ? (
-                <TouchableOpacity style={[styles.controlBtn, { backgroundColor: '#22c55e', flex: 1 }]} onPress={handleStart}>
-                  <Ionicons name="play" size={28} color="#fff" />
-                  <Text style={styles.controlBtnText}>{tempoSegundos > 0 ? "RETOMAR" : "INICIAR"}</Text>
+              {!session || session.status === "finished" ? (
+                <TouchableOpacity
+                  style={[styles.controlBtn, { backgroundColor: "#22c55e", flex: 1 }]}
+                  onPress={handleStart}
+                >
+                  <Ionicons name="play" size={26} color="#fff" />
+                  <Text style={styles.controlBtnText}>INICIAR</Text>
                 </TouchableOpacity>
-              ) : (
-                <TouchableOpacity style={[styles.controlBtn, { backgroundColor: '#f59e0b', flex: 1 }]} onPress={handlePause}>
-                  <Ionicons name="pause" size={28} color="#fff" />
+              ) : isRecording ? (
+                <TouchableOpacity
+                  style={[styles.controlBtn, { backgroundColor: "#f59e0b", flex: 1 }]}
+                  onPress={handlePause}
+                >
+                  <Ionicons name="pause" size={26} color="#fff" />
                   <Text style={styles.controlBtnText}>PAUSAR</Text>
                 </TouchableOpacity>
-              )}
-
-              {tempoSegundos > 0 && (
-                <TouchableOpacity style={[styles.controlBtn, { backgroundColor: '#ef4444', marginLeft: 10 }]} onPress={handleFinish}>
-                  <Ionicons name="stop" size={28} color="#fff" />
+              ) : (
+                <TouchableOpacity
+                  style={[styles.controlBtn, { backgroundColor: "#22c55e", flex: 1 }]}
+                  onPress={handleResume}
+                >
+                  <Ionicons name="play" size={26} color="#fff" />
+                  <Text style={styles.controlBtnText}>RETOMAR</Text>
                 </TouchableOpacity>
               )}
-            </View>
 
+              {session ? (
+                <TouchableOpacity
+                  style={[styles.controlBtn, { backgroundColor: "#ef4444", marginLeft: 10 }]}
+                  onPress={handleFinish}
+                >
+                  <Ionicons name="stop" size={26} color="#fff" />
+                </TouchableOpacity>
+              ) : null}
+            </View>
           </LinearGradient>
         </ImageBackground>
       </View>
@@ -263,20 +413,126 @@ export default function AtividadesScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  map: { width: Dimensions.get('window').width, height: Dimensions.get('window').height },
-  topBar: { position: 'absolute', top: 50, left: 20, right: 20, flexDirection: 'row', alignItems: 'center' },
-  iconButton: { backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 50, borderWidth: 1, borderColor: '#333' },
-  titleBadge: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', marginLeft: 15, paddingVertical: 12, paddingHorizontal: 15, borderRadius: 20, borderWidth: 1, borderColor: '#333' },
-  titleText: { color: '#ffd700', fontWeight: 'bold', fontSize: 14, textAlign: 'center' },
-  bottomPanel: { position: 'absolute', bottom: 0, width: '100%', height: 220, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20 },
-  panelOverlay: { flex: 1, borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, justifyContent: 'space-between' },
-  statsRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 20 },
-  statBox: { flex: 1, alignItems: 'center' },
-  statLabel: { color: '#aaa', fontSize: 12, fontWeight: 'bold', letterSpacing: 2, marginBottom: 5 },
-  statValue: { color: '#fff', fontSize: 40, fontWeight: 'bold' },
-  divider: { width: 1, height: 50, backgroundColor: '#333', marginHorizontal: 20 },
-  controlsRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  controlBtn: { flexDirection: 'row', paddingVertical: 18, borderRadius: 20, justifyContent: 'center', alignItems: 'center', elevation: 5 },
-  controlBtnText: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginLeft: 10 },
+  container: { flex: 1, backgroundColor: "#000" },
+  map: { ...StyleSheet.absoluteFillObject },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#000",
+  },
+  loadingText: {
+    color: "#fff",
+    marginTop: 10,
+  },
+  topBar: {
+    position: "absolute",
+    top: 50,
+    left: 20,
+    right: 20,
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  iconButton: {
+    backgroundColor: "rgba(0,0,0,0.6)",
+    padding: 10,
+    borderRadius: 50,
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  titleBadge: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.68)",
+    marginLeft: 15,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  titleText: {
+    color: "#ffd700",
+    fontWeight: "bold",
+    fontSize: 14,
+    textAlign: "center",
+  },
+  statusText: {
+    color: "#d1d5db",
+    fontSize: 12,
+    marginTop: 4,
+    textAlign: "center",
+  },
+  activityTypeBar: {
+    position: "absolute",
+    top: 130,
+    left: 16,
+    right: 16,
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  activityChip: {
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderWidth: 1,
+    borderColor: "#374151",
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  activityChipSelected: {
+    backgroundColor: "#ffd700",
+    borderColor: "#ffd700",
+  },
+  activityChipText: {
+    color: "#d1d5db",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  activityChipTextSelected: {
+    color: "#000",
+  },
+  bottomPanel: {
+    position: "absolute",
+    bottom: 0,
+    width: "100%",
+    height: 240,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    elevation: 20,
+  },
+  panelOverlay: {
+    flex: 1,
+    borderTopLeftRadius: 30,
+    borderTopRightRadius: 30,
+    padding: 20,
+    justifyContent: "space-between",
+  },
+  statsRow: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  statBox: { flex: 1, alignItems: "center" },
+  statLabel: {
+    color: "#aaa",
+    fontSize: 11,
+    fontWeight: "bold",
+    letterSpacing: 1.4,
+    marginBottom: 5,
+  },
+  statValue: { color: "#fff", fontSize: 24, fontWeight: "bold" },
+  divider: { width: 1, height: 48, backgroundColor: "#333", marginHorizontal: 10 },
+  controlsRow: { flexDirection: "row", justifyContent: "space-between" },
+  controlBtn: {
+    flexDirection: "row",
+    paddingVertical: 16,
+    borderRadius: 18,
+    justifyContent: "center",
+    alignItems: "center",
+    elevation: 5,
+    paddingHorizontal: 18,
+  },
+  controlBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold", marginLeft: 8 },
 });

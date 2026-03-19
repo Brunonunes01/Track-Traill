@@ -49,7 +49,7 @@ export default function AdminDashboardScreen() {
   const [rotaSelecionada, setRotaSelecionada] = useState<any>(null);
 
   useEffect(() => {
-    const unsubscribe = subscribeCurrentUserRole(({ isAdmin: adminAllowed, user }) => {
+    const unsubscribe = subscribeCurrentUserRole(({ isAdmin: adminAllowed, user }: any) => {
       setCurrentUserId(user?.uid || null);
       setIsAdmin(adminAllowed);
       setCheckingAccess(false);
@@ -66,18 +66,18 @@ export default function AdminDashboardScreen() {
   useEffect(() => {
     if (!isAdmin) return;
 
-    const unsubscribeAdmins = subscribeAdmins((adminUsers) => {
+    const unsubscribeAdmins = subscribeAdmins((adminUsers: any[]) => {
       setAdmins(
         adminUsers
-          .map((user) => ({ ...user, role: resolveUserRole(user, user.email) }))
+          .map((user: any) => ({ ...user, role: resolveUserRole(user, user.email) }))
           .sort((a, b) => (a.email || "").localeCompare(b.email || ""))
       );
     });
 
-    const unsubscribeUsers = subscribeUsers((allUsers) => {
+    const unsubscribeUsers = subscribeUsers((allUsers: any[]) => {
       setUsers(
         allUsers
-          .map((user) => ({ ...user, role: resolveUserRole(user, user.email) }))
+          .map((user: any) => ({ ...user, role: resolveUserRole(user, user.email) }))
           .sort((a, b) => (a.email || "").localeCompare(b.email || ""))
       );
     });
@@ -299,6 +299,9 @@ export default function AdminDashboardScreen() {
             title="Lista de usuários"
             users={users}
             emptyMessage="Nenhum usuário cadastrado."
+            actionLabel=""
+            onActionPress={() => {}}
+            disableActionForUid={null}
           />
         </View>
       );

@@ -14,6 +14,7 @@ import {
   View,
 } from "react-native";
 import { auth } from "../../services/connectionFirebase";
+import { ensureUserProfileCompatibility } from "../services/userService";
 
 export default function LoginScreen({ navigation }: any) {
   const [email, setEmail] = useState("");
@@ -48,11 +49,14 @@ export default function LoginScreen({ navigation }: any) {
     }
 
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      await ensureUserProfileCompatibility({
+        uid: userCredential.user.uid,
+        email: userCredential.user.email || "",
+      });
       setError("");
       setEmail("");
       setPassword("");
-      navigation.navigate("DashboardScreen");
     } catch (err: any) {
       if (err.code === "auth/user-not-found") {
         setError("Usuário não encontrado.");

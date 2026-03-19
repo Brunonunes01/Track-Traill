@@ -1,6 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
 import { createUserWithEmailAndPassword } from "firebase/auth";
-import { ref, set } from "firebase/database";
 import React, { useState } from "react";
 import {
   Image,
@@ -12,7 +11,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { auth, database } from "../../services/connectionFirebase";
+import { auth } from "../../services/connectionFirebase";
+import { isUsernameValid, normalizeUsername, registerUserProfile } from "../services/userService";
 
 export default function RegisterScreen({ navigation }: any) {
   const [fullName, setFullName] = useState("");
@@ -33,6 +33,12 @@ export default function RegisterScreen({ navigation }: any) {
       return;
     }
 
+    const normalizedUsername = normalizeUsername(username);
+    if (!isUsernameValid(normalizedUsername)) {
+      setError("Username inválido. Use 3-20 caracteres: letras, números ou underscore.");
+      return;
+    }
+
     try {
       const userCredential = await createUserWithEmailAndPassword(
         auth,
@@ -41,11 +47,11 @@ export default function RegisterScreen({ navigation }: any) {
       );
       const user = userCredential.user;
 
-      await set(ref(database, "users/" + user.uid), {
+      await registerUserProfile({
+        uid: user.uid,
         fullName,
-        username,
+        username: normalizedUsername,
         email,
-        role: "user", // Novo usuário entra sem privilégios administrativos.
       });
 
       setFullName("");
@@ -60,7 +66,7 @@ export default function RegisterScreen({ navigation }: any) {
         setError("Este e-mail já está em uso.");
       else if (err.code === "auth/invalid-email")
         setError("E-mail inválido.");
-      else setError("Erro ao criar conta.");
+      else setError(err?.message || "Erro ao criar conta.");
     }
   };
 
@@ -110,6 +116,7 @@ export default function RegisterScreen({ navigation }: any) {
             }}
             underlineColorAndroid="transparent"
             autoCorrect={false}
+            autoCapitalize="none"
           />
 
           <TextInput

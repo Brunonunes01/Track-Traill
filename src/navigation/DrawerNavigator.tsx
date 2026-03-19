@@ -16,8 +16,10 @@ import { auth } from "../../services/connectionFirebase";
 
 import AtividadesScreen from "../screens/AtividadesScreen";
 import CartScreen from "../screens/CartScreen";
+import CommunityScreen from "../screens/CommunityScreen";
 import ConfiguracoesScreen from "../screens/ConfiguracoesScreen";
 import DashboardScreen from "../screens/DashboardScreen";
+import FriendsScreen from "../screens/FriendsScreen";
 import HomeScreen from "../screens/HomeScreen";
 import PerfilScreen from "../screens/PerfilScreen";
 import PlansScreen from "../screens/PlansScreen";
@@ -27,7 +29,6 @@ const Drawer = createDrawerNavigator();
 /* ================= DRAWER CUSTOMIZADO ================= */
 
 function CustomDrawerContent(props: any) {
-  const { navigation } = props;
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
@@ -38,12 +39,7 @@ function CustomDrawerContent(props: any) {
   }, []);
 
   const handleLogout = () => {
-    auth.signOut().then(() => {
-      navigation.reset({
-        index: 0,
-        routes: [{ name: "Login" }],
-      });
-    });
+    auth.signOut();
   };
 
   return (
@@ -158,6 +154,32 @@ export default function DrawerNavigator() {
     ),
   }}
 />
+
+      {/* AMIGOS */}
+      <Drawer.Screen
+        name="Amigos"
+        component={FriendsScreen}
+        options={{
+          drawerLabel: "Amigos",
+          headerTitle: "Amigos",
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="people-outline" size={size} color={color} />
+          ),
+        }}
+      />
+
+      {/* COMUNIDADE */}
+      <Drawer.Screen
+        name="Comunidade"
+        component={CommunityScreen}
+        options={{
+          drawerLabel: "Comunidade",
+          headerTitle: "Comunidade",
+          drawerIcon: ({ color, size }) => (
+            <Ionicons name="chatbubbles-outline" size={size} color={color} />
+          ),
+        }}
+      />
 
 
       {/* ATIVIDADES */}

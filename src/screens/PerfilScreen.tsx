@@ -1,13 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Clipboard from "expo-clipboard";
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { onValue, ref, update } from 'firebase/database';
+import { onValue, ref } from 'firebase/database';
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   ImageBackground,
+  Share,
   ScrollView,
   StyleSheet,
   Text,
@@ -17,6 +19,7 @@ import {
 } from 'react-native';
 import { auth, database } from '../../services/connectionFirebase';
 import { ensureUserRole, resolveUserRole } from '../../services/adminService';
+import { ensureUserProfileCompatibility, updatePublicProfile } from "../services/userService";
 
 export default function PerfilScreen() {
   const [loading, setLoading] = useState(true);
@@ -41,6 +44,7 @@ export default function PerfilScreen() {
         setUidLogado(user.uid);
         setEmail(user.email || '');
         ensureUserRole(user.uid, user.email || '');
+        ensureUserProfileCompatibility({ uid: user.uid, email: user.email || "" });
 
         const userRef = ref(database, `users/${user.uid}`);
         
@@ -49,7 +53,7 @@ export default function PerfilScreen() {
             const data = snapshot.val();
             
             setFullName(data.fullName || 'Usuário Sem Nome');
-            setUsername(data.username || 'sem_user');
+            setUsername(data.username || `user_${user.uid.substring(0, 6)}`);
             setRole(resolveUserRole(data, user.email || '') as 'user' | 'admin');
 
             if (data.atividades) {
@@ -95,8 +99,8 @@ export default function PerfilScreen() {
     if (!uidLogado) return;
 
     try {
-      const userRef = ref(database, `users/${uidLogado}`);
-      await update(userRef, {
+      await updatePublicProfile({
+        uid: uidLogado,
         fullName,
         username,
       });
@@ -104,6 +108,24 @@ export default function PerfilScreen() {
       Alert.alert('Sucesso', 'O seu perfil foi atualizado!');
     } catch (error: any) {
       Alert.alert('Erro', 'Falha ao atualizar perfil: ' + error.message);
+    }
+  };
+
+  const profileDeepLink = `tracktrail://user/${username}`;
+  const profileWebLink = `https://tracktrail.app/user/${username}`;
+
+  const handleCopyProfileLink = async () => {
+    await Clipboard.setStringAsync(profileDeepLink);
+    Alert.alert("Link copiado", profileDeepLink);
+  };
+
+  const handleShareProfile = async () => {
+    try {
+      await Share.share({
+        message: `Meu perfil no Track & Trail:\n${profileDeepLink}\n${profileWebLink}`,
+      });
+    } catch {
+      Alert.alert("Erro", "Não foi possível compartilhar o perfil agora.");
     }
   };
 
@@ -157,6 +179,16 @@ export default function PerfilScreen() {
             <View style={[styles.roleBadge, role === 'admin' ? styles.roleBadgeAdmin : styles.roleBadgeUser]}>
               <Text style={styles.roleText}>{role.toUpperCase()}</Text>
             </View>
+            <View style={styles.shareRow}>
+              <TouchableOpacity style={styles.shareButton} onPress={handleCopyProfileLink}>
+                <Ionicons name="copy-outline" size={16} color="#d1d5db" />
+                <Text style={styles.shareButtonText}>Copiar link</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.shareButton} onPress={handleShareProfile}>
+                <Ionicons name="share-social-outline" size={16} color="#d1d5db" />
+                <Text style={styles.shareButtonText}>Compartilhar</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={styles.statsContainer}>
@@ -200,7 +232,7 @@ export default function PerfilScreen() {
               autoCapitalize="none"
             />
 
-            <Text style={styles.label}>E-mail (Não editável)</Text>
+            <Text style={styles.label}>E-mail (privado)</Text>
             <TextInput
               style={[styles.input, { color: '#666' }]}
               value={email}
@@ -248,6 +280,19 @@ const styles = StyleSheet.create({
   roleBadgeAdmin: { backgroundColor: 'rgba(239, 68, 68, 0.25)', borderWidth: 1, borderColor: '#ef4444' },
   roleBadgeUser: { backgroundColor: 'rgba(37, 99, 235, 0.25)', borderWidth: 1, borderColor: '#2563eb' },
   roleText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  shareRow: { flexDirection: "row", gap: 10, marginTop: 12 },
+  shareButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#374151",
+    backgroundColor: "rgba(0,0,0,0.35)",
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  shareButtonText: { color: "#d1d5db", fontSize: 12, fontWeight: "700" },
   statsContainer: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, padding: 20, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
   statBox: { flex: 1, alignItems: 'center' },
   divider: { width: 1, backgroundColor: 'rgba(255,255,255,0.2)', marginHorizontal: 15 },
