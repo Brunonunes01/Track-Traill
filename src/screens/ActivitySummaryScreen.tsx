@@ -105,7 +105,7 @@ export default function ActivitySummaryScreen() {
 
   const handleDiscard = async () => {
     await discardActiveSession();
-    navigation.navigate("DashboardScreen");
+    navigation.navigate("MainTabs", { screen: "Home" });
   };
 
   const handleSaveRoute = async () => {
@@ -128,7 +128,7 @@ export default function ActivitySummaryScreen() {
         `Atividade: ${response.activityId}\nRota: ${response.routeId}\nA rota foi enviada para análise.`
       );
 
-      navigation.navigate("DashboardScreen");
+      navigation.navigate("MainTabs", { screen: "Home" });
     } catch (error: any) {
       Alert.alert("Não foi possível salvar", error?.message || "Tente novamente.");
     } finally {

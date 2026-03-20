@@ -5,6 +5,7 @@ import * as Location from "expo-location";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   ScrollView,
   StyleSheet,
@@ -13,6 +14,7 @@ import {
   View,
 } from "react-native";
 import MapView, { MapType, Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AlertCard from "../components/AlertCard";
 import AlertMarker from "../components/AlertMarker";
 import RouteMarker from "../components/RouteMarker";
@@ -21,6 +23,12 @@ import { subscribeAlerts } from "../services/alertService";
 import { calculateDistanceKm, subscribeOfficialRoutes } from "../services/routeService";
 
 const NEARBY_RADIUS_KM = 20;
+const DEFAULT_REGION = {
+  latitude: -15.7942,
+  longitude: -47.8822,
+  latitudeDelta: 0.12,
+  longitudeDelta: 0.12,
+};
 
 type RouteDistance = TrackTrailRoute & {
   distanceFromUserKm?: number;
@@ -28,6 +36,7 @@ type RouteDistance = TrackTrailRoute & {
 
 export default function HomeScreen({ navigation }: any) {
   const isFocused = useIsFocused();
+  const insets = useSafeAreaInsets();
 
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [routes, setRoutes] = useState<TrackTrailRoute[]>([]);
@@ -41,33 +50,104 @@ export default function HomeScreen({ navigation }: any) {
   const [loadingAlerts, setLoadingAlerts] = useState(true);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [alertError, setAlertError] = useState<string | null>(null);
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   const mapRef = useRef<MapView>(null);
+  const locationWatcherRef = useRef<Location.LocationSubscription | null>(null);
 
   const categories = useMemo(() => {
     const dynamicTypes = Array.from(new Set(routes.map((route) => route.tipo)));
     return ["Todos", ...dynamicTypes];
   }, [routes]);
 
+  const stopLocationWatcher = () => {
+    if (locationWatcherRef.current) {
+      locationWatcherRef.current.remove();
+      locationWatcherRef.current = null;
+    }
+  };
+
+  const requestLocationAccess = async (showSystemAlert: boolean): Promise<boolean> => {
+    const servicesEnabled = await Location.hasServicesEnabledAsync();
+    if (!servicesEnabled) {
+      setLocationError("GPS desativado. Ative a localização do dispositivo.");
+      if (showSystemAlert) {
+        Alert.alert("GPS desativado", "Ative a localização do dispositivo para usar o mapa em tempo real.");
+      }
+      return false;
+    }
+
+    let permission = await Location.getForegroundPermissionsAsync();
+    if (permission.status !== "granted") {
+      permission = await Location.requestForegroundPermissionsAsync();
+    }
+
+    if (permission.status !== "granted") {
+      setLocationError("Permissão de localização negada.");
+      if (showSystemAlert) {
+        Alert.alert(
+          "Permissão necessária",
+          "Permita o acesso à localização para centralizar o mapa e usar o modo em tempo real."
+        );
+      }
+      return false;
+    }
+
+    setLocationError(null);
+    return true;
+  };
+
+  const centerOnUser = async () => {
+    const hasAccess = await requestLocationAccess(true);
+    if (!hasAccess) return;
+
+    try {
+      const current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setLocation(current);
+      mapRef.current?.animateCamera({ center: current.coords, zoom: 15 });
+    } catch {
+      setLocationError("Não foi possível obter sua localização atual.");
+      Alert.alert("Falha de localização", "Não foi possível obter sua posição no momento.");
+    }
+  };
+
   useEffect(() => {
-    if (!isFocused) return;
+    if (!isFocused) {
+      stopLocationWatcher();
+      return;
+    }
 
     let mounted = true;
     const syncLocation = async () => {
       try {
-        const permission = await Location.requestForegroundPermissionsAsync();
-        if (permission.status !== "granted") return;
+        const hasAccess = await requestLocationAccess(false);
+        if (!hasAccess || !mounted) return;
 
-        const current = await Location.getCurrentPositionAsync({});
+        const current = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
         if (!mounted) return;
 
         setLocation(current);
+        mapRef.current?.animateCamera({ center: current.coords, zoom: 14 });
 
-        setTimeout(() => {
-          mapRef.current?.animateCamera({ center: current.coords, zoom: 14 });
-        }, 250);
+        stopLocationWatcher();
+        locationWatcherRef.current = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 4000,
+            distanceInterval: 8,
+          },
+          (updatedLocation) => {
+            if (!mounted) return;
+            setLocation(updatedLocation);
+          }
+        );
       } catch {
-        // Mantemos o app funcional sem interromper o fluxo do mapa.
+        if (!mounted) return;
+        setLocationError("Falha ao iniciar localização em tempo real.");
       }
     };
 
@@ -75,6 +155,7 @@ export default function HomeScreen({ navigation }: any) {
 
     return () => {
       mounted = false;
+      stopLocationWatcher();
     };
   }, [isFocused]);
 
@@ -165,11 +246,6 @@ export default function HomeScreen({ navigation }: any) {
     setSelectedRoute(updated);
   }, [routeDistances, selectedRouteId]);
 
-  const centerOnUser = () => {
-    if (!location) return;
-    mapRef.current?.animateCamera({ center: location.coords, zoom: 15 });
-  };
-
   const focusNearbyRoutes = () => {
     setNearbyOnly((current) => {
       const nextValue = !current;
@@ -215,6 +291,16 @@ export default function HomeScreen({ navigation }: any) {
   const selectedRouteActiveAlerts = activeAlertsForRoute.filter((item) => item.status === "ativo");
 
   const loading = loadingRoutes || loadingAlerts;
+  const tabSafeOffset = Math.max(insets.bottom, 12);
+  const floatingBottomBase = tabSafeOffset + 72;
+  const handleOpenDrawer = () => {
+    const parent = navigation.getParent?.();
+    if (parent?.openDrawer) {
+      parent.openDrawer();
+      return;
+    }
+    navigation.navigate("Próximas");
+  };
 
   return (
     <View style={styles.container}>
@@ -223,6 +309,16 @@ export default function HomeScreen({ navigation }: any) {
           ref={mapRef}
           style={styles.map}
           provider={PROVIDER_DEFAULT}
+          initialRegion={
+            location
+              ? {
+                  latitude: location.coords.latitude,
+                  longitude: location.coords.longitude,
+                  latitudeDelta: 0.05,
+                  longitudeDelta: 0.05,
+                }
+              : DEFAULT_REGION
+          }
           mapType={mapType}
           showsUserLocation
           showsMyLocationButton={false}
@@ -271,7 +367,7 @@ export default function HomeScreen({ navigation }: any) {
         <View style={styles.topBar}>
           <TouchableOpacity
             style={styles.iconButton}
-            onPress={() => (navigation.openDrawer ? navigation.openDrawer() : navigation.goBack())}
+            onPress={handleOpenDrawer}
           >
             <Ionicons name="menu" size={24} color="#fff" />
           </TouchableOpacity>
@@ -356,8 +452,20 @@ export default function HomeScreen({ navigation }: any) {
         </View>
       ) : null}
 
+      {!routeError && !alertError && locationError ? (
+        <View style={styles.errorBadge}>
+          <Ionicons name="locate-outline" size={16} color="#fef3c7" />
+          <Text style={styles.errorText}>{locationError}</Text>
+        </View>
+      ) : null}
+
       <TouchableOpacity
-        style={[styles.fabPrimary, selectedRoute || selectedAlert ? { bottom: 250 } : { bottom: 105 }]}
+        style={[
+          styles.fabPrimary,
+          selectedRoute || selectedAlert
+            ? { bottom: floatingBottomBase + 145 }
+            : { bottom: floatingBottomBase },
+        ]}
         onPress={handleRegisterAlert}
       >
         <Ionicons name="warning" size={20} color="#000" />
@@ -365,15 +473,20 @@ export default function HomeScreen({ navigation }: any) {
       </TouchableOpacity>
 
       <TouchableOpacity
-        style={[styles.fabSecondary, selectedRoute || selectedAlert ? { bottom: 190 } : { bottom: 35 }]}
-        onPress={() => navigation.navigate("SuggestRoute")}
+        style={[
+          styles.fabSecondary,
+          selectedRoute || selectedAlert
+            ? { bottom: floatingBottomBase + 84 }
+            : { bottom: tabSafeOffset + 8 },
+        ]}
+        onPress={() => navigation.navigate("Próximas")}
       >
-        <Ionicons name="add" size={20} color="#000" />
-        <Text style={styles.fabText}>Sugerir rota</Text>
+        <Ionicons name="list" size={20} color="#000" />
+        <Text style={styles.fabText}>Ver rotas</Text>
       </TouchableOpacity>
 
       {selectedRoute ? (
-        <View style={styles.bottomCardWrap}>
+        <View style={[styles.bottomCardWrap, { bottom: floatingBottomBase + 6 }]}>
           <LinearGradient colors={["#0b1220", "#111827"]} style={styles.bottomCard}>
             <View style={styles.cardHeader}>
               <View style={{ flex: 1 }}>

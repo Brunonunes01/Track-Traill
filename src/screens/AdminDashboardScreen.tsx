@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
+import { useRouter } from "expo-router";
 import { LinearGradient } from "expo-linear-gradient";
 import { onValue, ref, remove, set } from "firebase/database";
 import React, { useEffect, useMemo, useState } from "react";
@@ -33,6 +34,7 @@ type AdminSection = "add" | "admins" | "users" | "tools" | "settings";
 
 export default function AdminDashboardScreen() {
   const navigation = useNavigation<any>();
+  const router = useRouter();
 
   const [checkingAccess, setCheckingAccess] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -56,12 +58,12 @@ export default function AdminDashboardScreen() {
 
       if (user && !adminAllowed) {
         Alert.alert("Acesso negado", "Esta área é exclusiva para administradores.");
-        navigation.navigate("DashboardScreen");
+        router.replace("/(tabs)");
       }
     });
 
     return unsubscribe;
-  }, [navigation]);
+  }, [navigation, router]);
 
   useEffect(() => {
     if (!isAdmin) return;

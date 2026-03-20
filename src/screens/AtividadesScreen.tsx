@@ -5,6 +5,7 @@ import * as Location from "expo-location";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, ImageBackground, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import MapView, { Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
 import {
   ActivityType,
@@ -44,6 +45,7 @@ const inferActivityType = (value?: string): ActivityType => {
 export default function AtividadesScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
+  const insets = useSafeAreaInsets();
   const rotaGuia = route.params?.rotaSugerida;
 
   const mapRef = useRef<MapView>(null);
@@ -275,7 +277,37 @@ export default function AtividadesScreen() {
       return;
     }
 
-    navigation.goBack();
+    navigation.navigate("Mapa");
+  };
+
+  const handleCenterOnCurrentLocation = async () => {
+    try {
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        const requested = await Location.requestForegroundPermissionsAsync();
+        if (requested.status !== "granted") {
+          Alert.alert("Permissão necessária", "Permita localização para centralizar o mapa.");
+          return;
+        }
+      }
+
+      const current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      mapRef.current?.animateCamera(
+        {
+          center: {
+            latitude: current.coords.latitude,
+            longitude: current.coords.longitude,
+          },
+          zoom: 17,
+        },
+        { duration: 500 }
+      );
+    } catch {
+      Alert.alert("Localização indisponível", "Não foi possível centralizar no local atual.");
+    }
   };
 
   if (loadingSession) {
@@ -321,6 +353,13 @@ export default function AtividadesScreen() {
           <Text style={styles.statusText}>{statusMessage}</Text>
         </View>
       </View>
+
+      <TouchableOpacity
+        style={[styles.currentLocationButton, { top: insets.top + 86 }]}
+        onPress={handleCenterOnCurrentLocation}
+      >
+        <Ionicons name="locate" size={22} color="#fff" />
+      </TouchableOpacity>
 
       {!session || session.status === "finished" ? (
         <View style={styles.activityTypeBar}>
@@ -535,4 +574,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
   },
   controlBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold", marginLeft: 8 },
+  currentLocationButton: {
+    position: "absolute",
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(15, 23, 42, 0.88)",
+    borderWidth: 1,
+    borderColor: "#334155",
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 7,
+  },
 });

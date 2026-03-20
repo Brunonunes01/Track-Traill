@@ -1,8 +1,8 @@
 import React from "react";
-import SimpleHomeScreen from "../../src/screens/SimpleHomeScreen";
+import RoutesScreen from "../../src/screens/RoutesScreen";
 import { useExpoNavigationBridge } from "../../src/navigation/useExpoNavigationBridge";
 
-export default function HomeTabRoute() {
+export default function ProximasTabRoute() {
   const navigation = useExpoNavigationBridge();
-  return <SimpleHomeScreen navigation={navigation} />;
+  return <RoutesScreen navigation={navigation} />;
 }
