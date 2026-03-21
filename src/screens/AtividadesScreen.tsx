@@ -1,9 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation, useRoute } from "@react-navigation/native";
-import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, ImageBackground, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import MapView, { Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
@@ -71,6 +77,7 @@ export default function AtividadesScreen() {
   const durationSeconds = useMemo(() => getSessionDurationSeconds(session), [session]);
   const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
   const isRecording = session?.status === "recording";
+  const hasActiveSession = !!session && session.status !== "finished";
 
   const stopForegroundWatch = () => {
     if (foregroundSubscription.current) {
@@ -193,30 +200,33 @@ export default function AtividadesScreen() {
 
       if (response.mode === "foreground") {
         await startForegroundWatch();
-        setStatusMessage("Rastreando em foreground. Mantenha o app aberto para melhor precisão.");
+        setStatusMessage("Atividade iniciada. Rastreamento em tempo real ativo.");
       } else {
         stopForegroundWatch();
-        setStatusMessage("Rastreando em background. Você pode bloquear a tela.");
+        setStatusMessage("Atividade iniciada em background.");
       }
     } catch (error: any) {
       Alert.alert("Não foi possível iniciar", error?.message || "Verifique permissões de localização.");
     }
   };
 
-  const handlePause = async () => {
-    try {
-      const paused = await pauseActivityTracking();
-      stopForegroundWatch();
-      if (paused) {
-        setSession(paused);
-      }
-      setStatusMessage("Atividade pausada.");
-    } catch {
-      Alert.alert("Erro", "Não foi possível pausar.");
-    }
-  };
+  const handlePauseOrResume = async () => {
+    if (!hasActiveSession) return;
 
-  const handleResume = async () => {
+    if (isRecording) {
+      try {
+        const paused = await pauseActivityTracking();
+        stopForegroundWatch();
+        if (paused) {
+          setSession(paused);
+        }
+        setStatusMessage("Atividade pausada.");
+      } catch {
+        Alert.alert("Erro", "Não foi possível pausar.");
+      }
+      return;
+    }
+
     try {
       const response = await resumeActivityTracking();
       if (!response) return;
@@ -224,17 +234,21 @@ export default function AtividadesScreen() {
       setSession(response.session);
       if (response.mode === "foreground") {
         await startForegroundWatch();
-        setStatusMessage("Retomado em foreground.");
       } else {
         stopForegroundWatch();
-        setStatusMessage("Retomado em background.");
       }
+      setStatusMessage("Atividade retomada.");
     } catch (error: any) {
-      Alert.alert("Erro ao retomar", error?.message || "Não foi possível retomar a atividade.");
+      Alert.alert("Erro", error?.message || "Não foi possível retomar a atividade.");
     }
   };
 
-  const handleFinish = async () => {
+  const handleMainAction = async () => {
+    if (!hasActiveSession) {
+      await handleStart();
+      return;
+    }
+
     try {
       stopForegroundWatch();
       const finished = await finishActivityTracking();
@@ -303,7 +317,7 @@ export default function AtividadesScreen() {
           },
           zoom: 17,
         },
-        { duration: 500 }
+        { duration: 450 }
       );
     } catch {
       Alert.alert("Localização indisponível", "Não foi possível centralizar no local atual.");
@@ -313,278 +327,303 @@ export default function AtividadesScreen() {
   if (loadingSession) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#ffd700" />
-        <Text style={styles.loadingText}>Preparando rastreamento GPS...</Text>
+        <ActivityIndicator size="large" color="#f97316" />
+        <Text style={styles.loadingText}>Preparando atividade...</Text>
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <MapView
-        ref={mapRef}
-        style={styles.map}
-        provider={PROVIDER_DEFAULT}
-        showsUserLocation
-        showsMyLocationButton={false}
-      >
-        {rotaGuia?.rotaCompleta ? (
-          <Polyline
-            coordinates={rotaGuia.rotaCompleta}
-            strokeColor="rgba(255, 215, 0, 0.35)"
-            strokeWidth={7}
-          />
-        ) : null}
+      <View style={styles.mapSection}>
+        <MapView
+          ref={mapRef}
+          style={styles.map}
+          provider={PROVIDER_DEFAULT}
+          showsUserLocation
+          showsMyLocationButton={false}
+        >
+          {rotaGuia?.rotaCompleta ? (
+            <Polyline coordinates={rotaGuia.rotaCompleta} strokeColor="rgba(249,115,22,0.45)" strokeWidth={6} />
+          ) : null}
 
-        {trackedPath.length > 1 ? (
-          <Polyline coordinates={trackedPath} strokeColor="#ef4444" strokeWidth={5} />
-        ) : null}
-      </MapView>
+          {trackedPath.length > 1 ? (
+            <Polyline coordinates={trackedPath} strokeColor="#fb7185" strokeWidth={5} />
+          ) : null}
+        </MapView>
 
-      <View style={styles.topBar}>
-        <TouchableOpacity style={styles.iconButton} onPress={handleExit}>
-          <Ionicons name="arrow-back" size={28} color="#fff" />
-        </TouchableOpacity>
+        <View style={[styles.mapTopRow, { top: insets.top + 8 }]}> 
+          <Pressable style={styles.topIconButton} onPress={handleExit}>
+            <Ionicons name="arrow-back" size={20} color="#f8fafc" />
+          </Pressable>
 
-        <View style={styles.titleBadge}>
-          <Text style={styles.titleText}>
-            {rotaGuia ? `Guiando: ${rotaGuia.titulo}` : "Rastreamento GPS"}
-          </Text>
-          <Text style={styles.statusText}>{statusMessage}</Text>
+          <View style={styles.statusWrap}>
+            <Text style={styles.statusTitle}>{isRecording ? "Atividade em andamento" : "Painel de atividade"}</Text>
+            <Text style={styles.statusDescription} numberOfLines={1}>{statusMessage}</Text>
+          </View>
         </View>
+
+        <Pressable
+          style={[styles.locateButton, { bottom: 14 + Math.max(insets.bottom, 0) }]}
+          onPress={handleCenterOnCurrentLocation}
+        >
+          <Ionicons name="locate" size={22} color="#f8fafc" />
+        </Pressable>
       </View>
 
-      <TouchableOpacity
-        style={[styles.currentLocationButton, { top: insets.top + 86 }]}
-        onPress={handleCenterOnCurrentLocation}
-      >
-        <Ionicons name="locate" size={22} color="#fff" />
-      </TouchableOpacity>
+      <View style={[styles.metricsSection, { paddingBottom: insets.bottom + 12 }]}> 
+        {!hasActiveSession ? (
+          <View style={styles.activityTypeRow}>
+            {ACTIVITY_OPTIONS.map((option) => {
+              const selected = activityType === option.value;
+              return (
+                <Pressable
+                  key={option.value}
+                  style={[styles.typeChip, selected ? styles.typeChipActive : null]}
+                  onPress={() => setActivityType(option.value)}
+                >
+                  <Text style={[styles.typeChipText, selected ? styles.typeChipTextActive : null]}>{option.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        ) : null}
 
-      {!session || session.status === "finished" ? (
-        <View style={styles.activityTypeBar}>
-          {ACTIVITY_OPTIONS.map((option) => {
-            const selected = activityType === option.value;
-            return (
-              <TouchableOpacity
-                key={option.value}
-                style={[styles.activityChip, selected ? styles.activityChipSelected : null]}
-                onPress={() => setActivityType(option.value)}
-              >
-                <Text style={[styles.activityChipText, selected ? styles.activityChipTextSelected : null]}>
-                  {option.label}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
+        <View style={styles.metricsRow}>
+          <View style={styles.metricCardLarge}>
+            <Text style={styles.metricLabel}>Tempo</Text>
+            <Text style={styles.metricValueLarge}>{formatDuration(durationSeconds)}</Text>
+          </View>
+
+          <View style={styles.metricCardLarge}>
+            <Text style={styles.metricLabel}>Distância</Text>
+            <Text style={styles.metricValueLarge}>{session?.distanceKm.toFixed(2) || "0.00"} km</Text>
+          </View>
         </View>
-      ) : null}
 
-      <View style={styles.bottomPanel}>
-        <ImageBackground
-          source={require("../../assets/images/Azulao.png")}
-          style={{ flex: 1 }}
-          imageStyle={{ borderTopLeftRadius: 30, borderTopRightRadius: 30 }}
+        <View style={styles.metricCardSmall}>
+          <Text style={styles.metricLabel}>Velocidade média</Text>
+          <Text style={styles.metricValueSmall}>{averageSpeed.toFixed(1)} km/h</Text>
+        </View>
+
+        <Pressable
+          style={({ pressed }) => [
+            styles.mainActionButton,
+            hasActiveSession ? styles.finishAction : styles.startAction,
+            pressed ? styles.buttonPressed : null,
+          ]}
+          onPress={handleMainAction}
         >
-          <LinearGradient colors={["rgba(0,0,0,0.88)", "rgba(0,0,0,0.98)"]} style={styles.panelOverlay}>
-            <View style={styles.statsRow}>
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>TEMPO</Text>
-                <Text style={styles.statValue}>{formatDuration(durationSeconds)}</Text>
-              </View>
-              <View style={styles.divider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>DISTÂNCIA</Text>
-                <Text style={styles.statValue}>
-                  {session?.distanceKm.toFixed(2) || "0.00"} <Text style={{ fontSize: 16 }}>km</Text>
-                </Text>
-              </View>
-              <View style={styles.divider} />
-              <View style={styles.statBox}>
-                <Text style={styles.statLabel}>MÉDIA</Text>
-                <Text style={styles.statValue}>
-                  {averageSpeed.toFixed(1)} <Text style={{ fontSize: 16 }}>km/h</Text>
-                </Text>
-              </View>
-            </View>
+          <Ionicons name={hasActiveSession ? "stop" : "play"} size={22} color="#fff" />
+          <Text style={styles.mainActionText}>
+            {hasActiveSession ? "Finalizar atividade" : "Iniciar atividade"}
+          </Text>
+        </Pressable>
 
-            <View style={styles.controlsRow}>
-              {!session || session.status === "finished" ? (
-                <TouchableOpacity
-                  style={[styles.controlBtn, { backgroundColor: "#22c55e", flex: 1 }]}
-                  onPress={handleStart}
-                >
-                  <Ionicons name="play" size={26} color="#fff" />
-                  <Text style={styles.controlBtnText}>INICIAR</Text>
-                </TouchableOpacity>
-              ) : isRecording ? (
-                <TouchableOpacity
-                  style={[styles.controlBtn, { backgroundColor: "#f59e0b", flex: 1 }]}
-                  onPress={handlePause}
-                >
-                  <Ionicons name="pause" size={26} color="#fff" />
-                  <Text style={styles.controlBtnText}>PAUSAR</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  style={[styles.controlBtn, { backgroundColor: "#22c55e", flex: 1 }]}
-                  onPress={handleResume}
-                >
-                  <Ionicons name="play" size={26} color="#fff" />
-                  <Text style={styles.controlBtnText}>RETOMAR</Text>
-                </TouchableOpacity>
-              )}
-
-              {session ? (
-                <TouchableOpacity
-                  style={[styles.controlBtn, { backgroundColor: "#ef4444", marginLeft: 10 }]}
-                  onPress={handleFinish}
-                >
-                  <Ionicons name="stop" size={26} color="#fff" />
-                </TouchableOpacity>
-              ) : null}
-            </View>
-          </LinearGradient>
-        </ImageBackground>
+        {hasActiveSession ? (
+          <Pressable
+            style={({ pressed }) => [styles.secondaryActionButton, pressed ? styles.buttonPressed : null]}
+            onPress={handlePauseOrResume}
+          >
+            <Ionicons name={isRecording ? "pause" : "play"} size={18} color="#e2e8f0" />
+            <Text style={styles.secondaryActionText}>
+              {isRecording ? "Pausar" : "Retomar"}
+            </Text>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#000" },
-  map: { ...StyleSheet.absoluteFillObject },
+  container: {
+    flex: 1,
+    backgroundColor: "#020617",
+  },
   loadingContainer: {
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#000",
+    justifyContent: "center",
+    backgroundColor: "#020617",
   },
   loadingText: {
-    color: "#fff",
     marginTop: 10,
+    color: "#cbd5e1",
+    fontSize: 14,
   },
-  topBar: {
+  mapSection: {
+    flex: 1.15,
+    position: "relative",
+    overflow: "hidden",
+  },
+  map: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  mapTopRow: {
     position: "absolute",
-    top: 50,
-    left: 20,
-    right: 20,
+    left: 12,
+    right: 12,
     flexDirection: "row",
     alignItems: "center",
+    gap: 10,
   },
-  iconButton: {
-    backgroundColor: "rgba(0,0,0,0.6)",
-    padding: 10,
-    borderRadius: 50,
-    borderWidth: 1,
-    borderColor: "#333",
-  },
-  titleBadge: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.68)",
-    marginLeft: 15,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#333",
-  },
-  titleText: {
-    color: "#ffd700",
-    fontWeight: "bold",
-    fontSize: 14,
-    textAlign: "center",
-  },
-  statusText: {
-    color: "#d1d5db",
-    fontSize: 12,
-    marginTop: 4,
-    textAlign: "center",
-  },
-  activityTypeBar: {
-    position: "absolute",
-    top: 130,
-    left: 16,
-    right: 16,
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  activityChip: {
-    backgroundColor: "rgba(0,0,0,0.72)",
-    borderWidth: 1,
-    borderColor: "#374151",
+  topIconButton: {
+    width: 40,
+    height: 40,
     borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.5)",
+    backgroundColor: "rgba(2,6,23,0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusWrap: {
+    flex: 1,
+    backgroundColor: "rgba(2,6,23,0.82)",
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.42)",
+    borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  activityChipSelected: {
-    backgroundColor: "#ffd700",
-    borderColor: "#ffd700",
-  },
-  activityChipText: {
-    color: "#d1d5db",
+  statusTitle: {
+    color: "#f8fafc",
+    fontSize: 13,
     fontWeight: "700",
+  },
+  statusDescription: {
+    marginTop: 2,
+    color: "#cbd5e1",
     fontSize: 12,
   },
-  activityChipTextSelected: {
-    color: "#000",
-  },
-  bottomPanel: {
+  locateButton: {
     position: "absolute",
-    bottom: 0,
-    width: "100%",
-    height: 240,
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    elevation: 20,
-  },
-  panelOverlay: {
-    flex: 1,
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
-    padding: 20,
-    justifyContent: "space-between",
-  },
-  statsRow: {
-    flexDirection: "row",
-    justifyContent: "center",
+    right: 14,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.42)",
+    backgroundColor: "rgba(2,6,23,0.9)",
     alignItems: "center",
-    marginBottom: 16,
-  },
-  statBox: { flex: 1, alignItems: "center" },
-  statLabel: {
-    color: "#aaa",
-    fontSize: 11,
-    fontWeight: "bold",
-    letterSpacing: 1.4,
-    marginBottom: 5,
-  },
-  statValue: { color: "#fff", fontSize: 24, fontWeight: "bold" },
-  divider: { width: 1, height: 48, backgroundColor: "#333", marginHorizontal: 10 },
-  controlsRow: { flexDirection: "row", justifyContent: "space-between" },
-  controlBtn: {
-    flexDirection: "row",
-    paddingVertical: 16,
-    borderRadius: 18,
     justifyContent: "center",
-    alignItems: "center",
-    elevation: 5,
-    paddingHorizontal: 18,
+    elevation: 8,
   },
-  controlBtnText: { color: "#fff", fontSize: 16, fontWeight: "bold", marginLeft: 8 },
-  currentLocationButton: {
-    position: "absolute",
-    right: 20,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: "rgba(15, 23, 42, 0.88)",
+  metricsSection: {
+    flex: 0.95,
+    backgroundColor: "#0f172a",
+    paddingHorizontal: 14,
+    paddingTop: 14,
+  },
+  activityTypeRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
+    gap: 8,
+    marginBottom: 12,
+  },
+  typeChip: {
     borderWidth: 1,
     borderColor: "#334155",
+    borderRadius: 18,
+    backgroundColor: "#1e293b",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  typeChipActive: {
+    borderColor: "#f97316",
+    backgroundColor: "rgba(249,115,22,0.18)",
+  },
+  typeChipText: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  typeChipTextActive: {
+    color: "#f97316",
+  },
+  metricsRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  metricCardLarge: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "#334155",
+    borderRadius: 14,
+    backgroundColor: "#111c31",
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+  },
+  metricCardSmall: {
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+    borderRadius: 14,
+    backgroundColor: "#111c31",
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: "center",
+  },
+  metricLabel: {
+    color: "#94a3b8",
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+    fontWeight: "700",
+    marginBottom: 6,
+  },
+  metricValueLarge: {
+    color: "#f8fafc",
+    fontSize: 24,
+    fontWeight: "800",
+  },
+  metricValueSmall: {
+    color: "#f8fafc",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  mainActionButton: {
+    marginTop: 14,
+    minHeight: 56,
+    borderRadius: 16,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    elevation: 7,
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  startAction: {
+    backgroundColor: "#16a34a",
+  },
+  finishAction: {
+    backgroundColor: "#dc2626",
+  },
+  mainActionText: {
+    color: "#fff",
+    fontSize: 17,
+    fontWeight: "800",
+  },
+  secondaryActionButton: {
+    marginTop: 10,
+    minHeight: 44,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#334155",
+    backgroundColor: "#1e293b",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  secondaryActionText: {
+    color: "#e2e8f0",
+    fontSize: 14,
+    fontWeight: "700",
+  },
+  buttonPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.98 }],
   },
 });

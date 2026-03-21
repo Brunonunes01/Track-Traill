@@ -30,7 +30,16 @@ import {
   subscribeUsers,
 } from "../../services/adminService";
 
-type AdminSection = "add" | "admins" | "users" | "tools" | "settings";
+type AdminSection = "add" | "admins" | "users" | "tools" | "routes" | "settings";
+
+type AdminRouteItem = {
+  id: string;
+  titulo: string;
+  tipo: string;
+  distancia?: string;
+  criadoEm?: string;
+  autor?: string;
+};
 
 export default function AdminDashboardScreen() {
   const navigation = useNavigation<any>();
@@ -49,6 +58,8 @@ export default function AdminDashboardScreen() {
 
   const [pendentes, setPendentes] = useState<any[]>([]);
   const [rotaSelecionada, setRotaSelecionada] = useState<any>(null);
+  const [officialRoutes, setOfficialRoutes] = useState<AdminRouteItem[]>([]);
+  const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeCurrentUserRole(({ isAdmin: adminAllowed, user }: any) => {
@@ -96,10 +107,35 @@ export default function AdminDashboardScreen() {
       setPendentes(lista);
     });
 
+    const oficiaisRef = ref(database, "rotas_oficiais");
+    const unsubscribeOfficialRoutes = onValue(oficiaisRef, (snapshot) => {
+      if (!snapshot.exists()) {
+        setOfficialRoutes([]);
+        return;
+      }
+
+      const data = snapshot.val();
+      const lista: AdminRouteItem[] = Object.keys(data).map((key) => {
+        const route = data[key] || {};
+        return {
+          id: key,
+          titulo: String(route.titulo || route.nome || "Rota sem nome"),
+          tipo: String(route.tipo || "trilha"),
+          distancia: route.distancia ? String(route.distancia) : undefined,
+          criadoEm: route.aprovadoEm || route.createdAt || route.dataCriacao,
+          autor: route.autor || route.emailAutor || route.userEmail || route.userDisplayName,
+        };
+      });
+
+      lista.sort((a, b) => (a.titulo || "").localeCompare(b.titulo || ""));
+      setOfficialRoutes(lista);
+    });
+
     return () => {
       unsubscribeAdmins();
       unsubscribeUsers();
       unsubscribePendentes();
+      unsubscribeOfficialRoutes();
     };
   }, [isAdmin]);
 
@@ -193,6 +229,41 @@ export default function AdminDashboardScreen() {
     ]);
   };
 
+  const formatAdminDate = (value?: string) => {
+    if (!value) return "Data não informada";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "Data não informada";
+    return parsed.toLocaleString("pt-BR");
+  };
+
+  const handleDeleteOfficialRoute = (routeItem: AdminRouteItem) => {
+    Alert.alert(
+      "Excluir rota",
+      "Tem certeza que deseja excluir esta rota?",
+      [
+        { text: "Cancelar", style: "cancel" },
+        {
+          text: "Excluir",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setDeletingRouteId(routeItem.id);
+              await remove(ref(database, `rotas_oficiais/${routeItem.id}`));
+              Alert.alert("Rota excluída", "A rota foi removida com sucesso.");
+            } catch (error: any) {
+              Alert.alert(
+                "Erro ao excluir",
+                error?.message || "Não foi possível excluir a rota agora."
+              );
+            } finally {
+              setDeletingRouteId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const renderSectionButtons = () => (
     <View style={styles.sectionButtons}>
       <TouchableOpacity
@@ -237,6 +308,15 @@ export default function AdminDashboardScreen() {
       >
         <Text style={[styles.sectionBtnText, activeSection === "settings" && styles.sectionBtnTextActive]}>
           Configurações do sistema
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.sectionBtn, activeSection === "routes" && styles.sectionBtnActive]}
+        onPress={() => setActiveSection("routes")}
+      >
+        <Text style={[styles.sectionBtnText, activeSection === "routes" && styles.sectionBtnTextActive]}>
+          Gerenciar rotas
         </Text>
       </TouchableOpacity>
     </View>
@@ -324,6 +404,59 @@ export default function AdminDashboardScreen() {
             <Ionicons name="server-outline" size={20} color="#60a5fa" />
             <Text style={styles.systemItemText}>Conectado ao Firebase Realtime Database</Text>
           </View>
+        </View>
+      );
+    }
+
+    if (activeSection === "routes") {
+      return (
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Rotas oficiais ({officialRoutes.length})</Text>
+          <Text style={styles.sectionDescription}>
+            Lista completa de rotas cadastradas. Exclua apenas quando necessário.
+          </Text>
+
+          {officialRoutes.length === 0 ? (
+            <View style={styles.emptyTools}>
+              <Ionicons name="trail-sign-outline" size={52} color="#94a3b8" />
+              <Text style={styles.emptyToolsText}>Nenhuma rota oficial cadastrada.</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={officialRoutes}
+              keyExtractor={(item) => item.id}
+              scrollEnabled={false}
+              renderItem={({ item }) => (
+                <View style={styles.routeCard}>
+                  <View style={styles.routeCardIcon}>
+                    <Ionicons name="map-outline" size={24} color="#60a5fa" />
+                  </View>
+
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.routeCardTitle}>{item.titulo}</Text>
+                    <Text style={styles.routeCardMeta}>Tipo: {item.tipo}</Text>
+                    <Text style={styles.routeCardMeta}>
+                      Distância: {item.distancia || "Não informada"}
+                    </Text>
+                    <Text style={styles.routeCardMeta}>Criada em: {formatAdminDate(item.criadoEm)}</Text>
+                    <Text style={styles.routeCardMeta}>Autor: {item.autor || "Não informado"}</Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.deleteRouteBtn}
+                    disabled={deletingRouteId === item.id}
+                    onPress={() => handleDeleteOfficialRoute(item)}
+                  >
+                    {deletingRouteId === item.id ? (
+                      <ActivityIndicator size="small" color="#ef4444" />
+                    ) : (
+                      <Ionicons name="trash-outline" size={20} color="#ef4444" />
+                    )}
+                  </TouchableOpacity>
+                </View>
+              )}
+            />
+          )}
         </View>
       );
     }
@@ -556,6 +689,17 @@ const styles = StyleSheet.create({
   },
   routeCardTitle: { color: "#fff", fontWeight: "700", fontSize: 14 },
   routeCardMeta: { color: "#aaa", fontSize: 12, marginTop: 2 },
+  deleteRouteBtn: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.45)",
+    backgroundColor: "rgba(127,29,29,0.22)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+  },
   map: { width: Dimensions.get("window").width, height: Dimensions.get("window").height * 0.65 },
   modalPanel: {
     position: "absolute",
