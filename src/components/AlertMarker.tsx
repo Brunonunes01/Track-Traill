@@ -9,8 +9,9 @@ type AlertMarkerProps = {
 };
 
 export default function AlertMarker({ alert, selected }: AlertMarkerProps) {
-  const meta = ALERT_TYPE_META[alert.type];
-  const markerColor = alert.status === "resolvido" ? "#4b5563" : meta.color;
+  const meta = ALERT_TYPE_META[alert.type] || ALERT_TYPE_META["outro"];
+  const markerColor =
+    alert.status === "resolvido" ? "#4b5563" : meta?.color || "#6b7280";
 
   return (
     <View
@@ -20,8 +21,14 @@ export default function AlertMarker({ alert, selected }: AlertMarkerProps) {
         selected ? styles.markerSelected : null,
       ]}
     >
-      <Ionicons name={meta.icon as any} size={18} color="#fff" />
-      {alert.status === "resolvido" ? <View style={styles.resolvedBadge} /> : null}
+      <Ionicons
+        name={(meta?.icon || "alert-circle") as any}
+        size={18}
+        color="#fff"
+      />
+      {alert.status === "resolvido" ? (
+        <View style={styles.resolvedBadge} />
+      ) : null}
     </View>
   );
 }

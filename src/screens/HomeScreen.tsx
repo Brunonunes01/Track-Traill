@@ -21,15 +21,10 @@ import RouteMarker from "../components/RouteMarker";
 import { TrackTrailRoute, TrailAlert } from "../models/alerts";
 import { subscribeAlerts } from "../services/alertService";
 import { calculateDistanceKm, subscribeOfficialRoutes } from "../services/routeService";
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
 
 const NEARBY_RADIUS_KM = 20;
-const DEFAULT_REGION = {
-  latitude: -15.7942,
-  longitude: -47.8822,
-  latitudeDelta: 0.12,
-  longitudeDelta: 0.12,
-};
-
+const normalizeRouteType = (value?: string) => (value || "").trim().toLowerCase();
 type RouteDistance = TrackTrailRoute & {
   distanceFromUserKm?: number;
 };
@@ -39,7 +34,9 @@ export default function HomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
 
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
+  const [hasPermission, setHasPermission] = useState<boolean>(false);
   const [routes, setRoutes] = useState<TrackTrailRoute[]>([]);
+  // ... (outros estados omitidos para clareza, mas mantidos no arquivo)
   const [alerts, setAlerts] = useState<TrailAlert[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<RouteDistance | null>(null);
   const [selectedAlert, setSelectedAlert] = useState<TrailAlert | null>(null);
@@ -56,7 +53,13 @@ export default function HomeScreen({ navigation }: any) {
   const locationWatcherRef = useRef<Location.LocationSubscription | null>(null);
 
   const categories = useMemo(() => {
-    const dynamicTypes = Array.from(new Set(routes.map((route) => route.tipo)));
+    const dynamicTypes = Array.from(
+      new Set(
+        routes
+          .map((route) => route.tipo)
+          .filter((item): item is string => Boolean(item))
+      )
+    );
     return ["Todos", ...dynamicTypes];
   }, [routes]);
 
@@ -68,36 +71,54 @@ export default function HomeScreen({ navigation }: any) {
   };
 
   const requestLocationAccess = async (showSystemAlert: boolean): Promise<boolean> => {
-    const servicesEnabled = await Location.hasServicesEnabledAsync();
-    if (!servicesEnabled) {
-      setLocationError("GPS desativado. Ative a localização do dispositivo.");
+    try {
+      console.log("[map] Validating GPS services status");
+      const servicesEnabled = await Location.hasServicesEnabledAsync();
+      if (!servicesEnabled) {
+        console.warn("[map] Location services are disabled on device");
+        setLocationError("GPS desativado. Ative a localização do dispositivo.");
+        if (showSystemAlert) {
+          Alert.alert("GPS desativado", "Ative a localização do dispositivo para usar o mapa em tempo real.");
+        }
+        return false;
+      }
+
+      console.log("[map] Checking/requesting foreground permissions");
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        permission = await Location.requestForegroundPermissionsAsync();
+      }
+
+      if (permission.status !== "granted") {
+        console.warn("[map] Permission denied by user:", permission.status);
+        setLocationError("Permissão de localização negada.");
+        setHasPermission(false);
+        if (showSystemAlert) {
+          Alert.alert(
+            "Permissão necessária",
+            "Permita o acesso à localização para centralizar o mapa e usar o modo em tempo real."
+          );
+        }
+        return false;
+      }
+
+      console.log("[map] GPS permission granted");
+      setLocationError(null);
+      setHasPermission(true);
+      return true;
+    } catch (error: any) {
+      console.error("[map] requestLocationAccess crashed:", error?.message || String(error));
+      setLocationError("Falha ao validar permissões de localização.");
+      setHasPermission(false);
       if (showSystemAlert) {
-        Alert.alert("GPS desativado", "Ative a localização do dispositivo para usar o mapa em tempo real.");
+        Alert.alert("Erro de localização", "Não foi possível validar as permissões de GPS.");
       }
       return false;
     }
-
-    let permission = await Location.getForegroundPermissionsAsync();
-    if (permission.status !== "granted") {
-      permission = await Location.requestForegroundPermissionsAsync();
-    }
-
-    if (permission.status !== "granted") {
-      setLocationError("Permissão de localização negada.");
-      if (showSystemAlert) {
-        Alert.alert(
-          "Permissão necessária",
-          "Permita o acesso à localização para centralizar o mapa e usar o modo em tempo real."
-        );
-      }
-      return false;
-    }
-
-    setLocationError(null);
-    return true;
   };
 
   const centerOnUser = async () => {
+    console.log("[map] Manual center on user requested");
     const hasAccess = await requestLocationAccess(true);
     if (!hasAccess) return;
 
@@ -105,9 +126,16 @@ export default function HomeScreen({ navigation }: any) {
       const current = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
+      const safePoint = toCoordinate(current.coords);
+      if (!safePoint) {
+        throw new Error("Coordenadas inválidas recebidas.");
+      }
+      
+      console.log("[map] Centering at:", safePoint);
       setLocation(current);
-      mapRef.current?.animateCamera({ center: current.coords, zoom: 15 });
-    } catch {
+      mapRef.current?.animateCamera({ center: safePoint, zoom: 15 });
+    } catch (error: any) {
+      console.error("[map] centerOnUser failed:", error?.message || String(error));
       setLocationError("Não foi possível obter sua localização atual.");
       Alert.alert("Falha de localização", "Não foi possível obter sua posição no momento.");
     }
@@ -145,8 +173,9 @@ export default function HomeScreen({ navigation }: any) {
             setLocation(updatedLocation);
           }
         );
-      } catch {
+      } catch (error: any) {
         if (!mounted) return;
+        console.warn("[map] syncLocation failed:", error?.message || String(error));
         setLocationError("Falha ao iniciar localização em tempo real.");
       }
     };
@@ -160,12 +189,26 @@ export default function HomeScreen({ navigation }: any) {
   }, [isFocused]);
 
   useEffect(() => {
+    console.log("[map] HomeScreen subscriptions starting");
+    
+    // Safety timeout to avoid infinite loading
+    const safetyTimeout = setTimeout(() => {
+      if (loadingRoutes || loadingAlerts) {
+        console.warn("[map] Subscriptions taking too long. Releasing loading states.");
+        setLoadingRoutes(false);
+        setLoadingAlerts(false);
+      }
+    }, 10000);
+
     const unsubscribeRoutes = subscribeOfficialRoutes(
       (incoming) => {
+        console.log(`[map] Routes updated: ${incoming.length}`);
         setRoutes(incoming);
         setLoadingRoutes(false);
+        if (!loadingAlerts) clearTimeout(safetyTimeout);
       },
       (message) => {
+        console.error(`[map] Routes subscription error: ${message}`);
         setRouteError(message);
         setLoadingRoutes(false);
       }
@@ -173,16 +216,21 @@ export default function HomeScreen({ navigation }: any) {
 
     const unsubscribeAlerts = subscribeAlerts(
       (incoming) => {
+        console.log(`[map] Alerts updated: ${incoming.length}`);
         setAlerts(incoming);
         setLoadingAlerts(false);
+        if (!loadingRoutes) clearTimeout(safetyTimeout);
       },
       (message) => {
+        console.error(`[map] Alerts subscription error: ${message}`);
         setAlertError(message);
         setLoadingAlerts(false);
       }
     );
 
     return () => {
+      console.log("[map] HomeScreen subscriptions cleaning up");
+      clearTimeout(safetyTimeout);
       unsubscribeRoutes();
       unsubscribeAlerts();
     };
@@ -219,8 +267,10 @@ export default function HomeScreen({ navigation }: any) {
 
   const visibleRoutes = useMemo(() => {
     return routeDistances.filter((route) => {
+      const normalizedRouteType = normalizeRouteType(route.tipo);
+      const normalizedActiveFilter = normalizeRouteType(activeFilter);
       const categoryOk =
-        activeFilter === "Todos" || route.tipo.toLowerCase().includes(activeFilter.toLowerCase());
+        activeFilter === "Todos" || normalizedRouteType.includes(normalizedActiveFilter);
 
       if (!categoryOk) return false;
       if (!nearbyOnly) return true;
@@ -231,6 +281,41 @@ export default function HomeScreen({ navigation }: any) {
 
   const activeAlerts = useMemo(
     () => alerts.filter((alert) => alert.status === "ativo"),
+    [alerts]
+  );
+  const mapInitialRegion = useMemo(() => {
+    // Retorna FALLBACK_REGION no mount para estabilidade no Android APK.
+    // O mapa será centralizado dinamicamente via animateCamera após obter a localização.
+    return FALLBACK_REGION;
+  }, []);
+  const safeVisibleRoutes = useMemo(
+    () =>
+      visibleRoutes
+        .map((route) => ({
+          ...route,
+          safeStartPoint: toCoordinate(route.startPoint),
+        }))
+        .filter((route) => Boolean(route.safeStartPoint)),
+    [visibleRoutes]
+  );
+  const safeAlerts = useMemo(
+    () =>
+      alerts
+        .map((alert) => ({
+          alert,
+          coordinate: toCoordinate({
+            latitude: alert.latitude,
+            longitude: alert.longitude,
+          }),
+        }))
+        .filter(
+          (
+            item
+          ): item is {
+            alert: TrailAlert;
+            coordinate: { latitude: number; longitude: number };
+          } => Boolean(item.coordinate)
+        ),
     [alerts]
   );
 
@@ -267,10 +352,24 @@ export default function HomeScreen({ navigation }: any) {
     });
   };
 
-  const handleOpenDirections = () => {
+  const selectedRoutePath = useMemo(
+    () => toCoordinateArray(selectedRoute?.rotaCompleta),
+    [selectedRoute?.rotaCompleta]
+  );
+
+  const handleOpenDirections = async () => {
     if (!selectedRoute?.startPoint) return;
     const url = `http://maps.google.com/maps?q=${selectedRoute.startPoint.latitude},${selectedRoute.startPoint.longitude}`;
-    Linking.openURL(url);
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) {
+        Alert.alert("Mapa indisponível", "Não foi possível abrir o aplicativo de mapas.");
+        return;
+      }
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert("Mapa indisponível", "Não foi possível abrir o aplicativo de mapas.");
+    }
   };
 
   const handleStartTrail = () => {
@@ -302,6 +401,19 @@ export default function HomeScreen({ navigation }: any) {
     navigation.navigate("Próximas");
   };
 
+  useEffect(() => {
+    if (isFocused) {
+      console.log("[map] HomeScreen focused. Ready for map rendering.");
+      console.log("[map] Initial state check:", {
+        hasPermission,
+        routesCount: routes.length,
+        alertsCount: alerts.length,
+        locationAvailable: !!location,
+        isWeb: Platform.OS === "web",
+      });
+    }
+  }, [isFocused, hasPermission, routes.length, alerts.length, !!location]);
+
   return (
     <View style={styles.container}>
       {isFocused ? (
@@ -309,61 +421,71 @@ export default function HomeScreen({ navigation }: any) {
           ref={mapRef}
           style={styles.map}
           provider={PROVIDER_DEFAULT}
-          initialRegion={
-            location
-              ? {
-                  latitude: location.coords.latitude,
-                  longitude: location.coords.longitude,
-                  latitudeDelta: 0.05,
-                  longitudeDelta: 0.05,
-                }
-              : DEFAULT_REGION
-          }
+          initialRegion={mapInitialRegion}
           mapType={mapType}
-          showsUserLocation
+          showsUserLocation={hasPermission}
           showsMyLocationButton={false}
+          onMapReady={() => {
+            console.log("[map] MapView native component ready.");
+          }}
+          onError={(error) => {
+            console.error("[map] MapView internal error captured:", error);
+          }}
         >
-          {visibleRoutes.map((route) =>
-            route.startPoint ? (
+          {safeVisibleRoutes.map((route) => {
+            if (!route.safeStartPoint) return null;
+            return (
               <Marker
                 key={`route-${route.id}`}
-                coordinate={route.startPoint}
+                coordinate={route.safeStartPoint}
                 onPress={() => {
                   setSelectedRoute(route);
                   setSelectedAlert(null);
                 }}
               >
                 <RouteMarker
-                  type={route.tipo}
+                  type={route.tipo || "trilha"}
                   selected={selectedRoute?.id === route.id}
                   activeAlertsCount={
                     (alertsByRoute[route.id] || []).filter((item) => item.status === "ativo").length
                   }
                 />
               </Marker>
-            ) : null
-          )}
+            );
+          })}
 
-          {alerts.map((alert) => (
-            <Marker
-              key={`alert-${alert.id}`}
-              coordinate={{ latitude: alert.latitude, longitude: alert.longitude }}
-              onPress={() => {
-                setSelectedAlert(alert);
-                setSelectedRoute(null);
-              }}
-            >
-              <AlertMarker alert={alert} selected={selectedAlert?.id === alert.id} />
-            </Marker>
-          ))}
+          {safeAlerts.map(({ alert, coordinate }) => {
+            if (!coordinate) return null;
+            return (
+              <Marker
+                key={`alert-${alert.id}`}
+                coordinate={coordinate}
+                onPress={() => {
+                  setSelectedAlert(alert);
+                  setSelectedRoute(null);
+                }}
+              >
+                <AlertMarker alert={alert} selected={selectedAlert?.id === alert.id} />
+              </Marker>
+            );
+          })}
 
-          {selectedRoute?.rotaCompleta && selectedRoute.rotaCompleta.length > 0 ? (
-            <Polyline coordinates={selectedRoute.rotaCompleta} strokeColor="#ffd700" strokeWidth={5} />
+          {selectedRoutePath && selectedRoutePath.length >= 2 ? (
+            <Polyline
+              coordinates={selectedRoutePath}
+              strokeColor="#ffd700"
+              strokeWidth={5}
+            />
           ) : null}
         </MapView>
-      ) : null}
+      ) : (
+        <View style={styles.placeholder}>
+          <ActivityIndicator size="large" color="#1e4db7" />
+          <Text style={styles.placeholderText}>Carregando mapa...</Text>
+        </View>
+      )}
 
-      <View style={styles.topContainer}>
+      <View style={[styles.topContainer, { top: insets.top + 8 }]}>
         <View style={styles.topBar}>
           <TouchableOpacity
             style={styles.iconButton}
@@ -611,6 +733,17 @@ export default function HomeScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#000" },
   map: { ...StyleSheet.absoluteFillObject },
+  placeholder: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#020617",
+  },
+  placeholderText: {
+    marginTop: 12,
+    color: "#94a3b8",
+    fontSize: 14,
+  },
 
   topContainer: { position: "absolute", top: 40, width: "100%" },
   topBar: {

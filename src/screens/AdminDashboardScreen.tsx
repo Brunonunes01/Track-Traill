@@ -21,6 +21,7 @@ import {
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import AdminUserList from "../../components/AdminUserList";
 import { database } from "../../services/connectionFirebase";
+import { toCoordinate, toCoordinateArray } from "../utils/geo";
 import {
   addAdminByEmail,
   removeAdminRole,
@@ -41,8 +42,13 @@ type AdminRouteItem = {
   autor?: string;
 };
 
-export default function AdminDashboardScreen() {
-  const navigation = useNavigation<any>();
+type AdminDashboardScreenProps = {
+  navigation?: any;
+};
+
+export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const navigation = props.navigation || hookNavigation;
   const router = useRouter();
 
   const [checkingAccess, setCheckingAccess] = useState(true);
@@ -189,13 +195,22 @@ export default function AdminDashboardScreen() {
     if (!rotaSelecionada) return;
 
     try {
+      const safeStartPoint = toCoordinate(rotaSelecionada.startPoint);
+      const safeEndPoint = toCoordinate(rotaSelecionada.endPoint);
+      const safePath = toCoordinateArray(rotaSelecionada.rotaCompleta);
+
+      if (!safeStartPoint || !safeEndPoint || safePath.length < 2) {
+        Alert.alert("Rota inválida", "Esta sugestão tem coordenadas incompletas e não pode ser aprovada.");
+        return;
+      }
+
       const oficialRef = ref(database, `rotas_oficiais/${rotaSelecionada.id}`);
       await set(oficialRef, {
         titulo: rotaSelecionada.nome,
         tipo: rotaSelecionada.tipo,
-        startPoint: rotaSelecionada.startPoint,
-        endPoint: rotaSelecionada.endPoint,
-        rotaCompleta: rotaSelecionada.rotaCompleta,
+        startPoint: safeStartPoint,
+        endPoint: safeEndPoint,
+        rotaCompleta: safePath,
         autor: rotaSelecionada.emailAutor,
         aprovadoEm: new Date().toISOString(),
       });
@@ -263,6 +278,10 @@ export default function AdminDashboardScreen() {
       ]
     );
   };
+
+  const selectedStartPoint = useMemo(() => toCoordinate(rotaSelecionada?.startPoint), [rotaSelecionada]);
+  const selectedEndPoint = useMemo(() => toCoordinate(rotaSelecionada?.endPoint), [rotaSelecionada]);
+  const selectedPath = useMemo(() => toCoordinateArray(rotaSelecionada?.rotaCompleta), [rotaSelecionada]);
 
   const renderSectionButtons = () => (
     <View style={styles.sectionButtons}>
@@ -527,32 +546,41 @@ export default function AdminDashboardScreen() {
 
         <Modal visible={!!rotaSelecionada} animationType="slide">
           <View style={{ flex: 1, backgroundColor: "#000" }}>
-            {rotaSelecionada && (
+            {rotaSelecionada && selectedStartPoint ? (
               <MapView
                 style={styles.map}
                 provider={PROVIDER_DEFAULT}
                 initialRegion={{
-                  latitude: rotaSelecionada.startPoint.latitude,
-                  longitude: rotaSelecionada.startPoint.longitude,
+                  latitude: selectedStartPoint.latitude,
+                  longitude: selectedStartPoint.longitude,
                   latitudeDelta: 0.05,
                   longitudeDelta: 0.05,
                 }}
               >
-                <Marker coordinate={rotaSelecionada.startPoint} title="Início">
+                <Marker coordinate={selectedStartPoint} title="Início">
                   <Ionicons name="location" size={40} color="#22c55e" />
                 </Marker>
-                <Marker coordinate={rotaSelecionada.endPoint} title="Fim">
-                  <Ionicons name="flag" size={40} color="#ef4444" />
-                </Marker>
-                {rotaSelecionada.rotaCompleta && (
+                {selectedEndPoint ? (
+                  <Marker coordinate={selectedEndPoint} title="Fim">
+                    <Ionicons name="flag" size={40} color="#ef4444" />
+                  </Marker>
+                ) : null}
+                {selectedPath.length > 1 ? (
                   <Polyline
-                    coordinates={rotaSelecionada.rotaCompleta}
+                    coordinates={selectedPath}
                     strokeColor="#ffd700"
                     strokeWidth={5}
                   />
-                )}
+                ) : null}
               </MapView>
-            )}
+            ) : rotaSelecionada ? (
+              <View style={styles.modalMapFallback}>
+                <Ionicons name="warning-outline" size={30} color="#f59e0b" />
+                <Text style={styles.modalMapFallbackText}>
+                  Não foi possível renderizar o mapa desta rota. Coordenadas inválidas.
+                </Text>
+              </View>
+            ) : null}
 
             <View style={styles.modalPanel}>
               <Text style={styles.modalTitle}>{rotaSelecionada?.nome}</Text>
@@ -701,6 +729,20 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
   map: { width: Dimensions.get("window").width, height: Dimensions.get("window").height * 0.65 },
+  modalMapFallback: {
+    width: Dimensions.get("window").width,
+    height: Dimensions.get("window").height * 0.65,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
+    backgroundColor: "#111827",
+  },
+  modalMapFallbackText: {
+    color: "#e5e7eb",
+    fontSize: 14,
+    textAlign: "center",
+    paddingHorizontal: 20,
+  },
   modalPanel: {
     position: "absolute",
     bottom: 0,

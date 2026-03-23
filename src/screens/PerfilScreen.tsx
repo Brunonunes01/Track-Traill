@@ -21,7 +21,11 @@ import { auth, database } from '../../services/connectionFirebase';
 import { ensureUserRole, resolveUserRole } from '../../services/adminService';
 import { ensureUserProfileCompatibility, updatePublicProfile } from "../services/userService";
 
-export default function PerfilScreen() {
+type PerfilScreenProps = {
+  navigation?: any;
+};
+
+export default function PerfilScreen(props: PerfilScreenProps) {
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   
@@ -36,19 +40,36 @@ export default function PerfilScreen() {
   const [totalKm, setTotalKm] = useState(0);
   const [totalMinutos, setTotalMinutos] = useState(0);
 
-  const navigation = useNavigation<any>();
+  const hookNavigation = useNavigation<any>();
+  const navigation = props.navigation || hookNavigation;
 
   useEffect(() => {
+    let unsubscribeDB: (() => void) | null = null;
+
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      if (unsubscribeDB) {
+        unsubscribeDB();
+        unsubscribeDB = null;
+      }
+
       if (user) {
         setUidLogado(user.uid);
         setEmail(user.email || '');
-        ensureUserRole(user.uid, user.email || '');
-        ensureUserProfileCompatibility({ uid: user.uid, email: user.email || "" });
+        ensureUserRole(user.uid, user.email || '').catch((error: any) => {
+          console.warn("[admin] ensureUserRole failed:", error?.message || String(error));
+        });
+        ensureUserProfileCompatibility({ uid: user.uid, email: user.email || "" }).catch((error: any) => {
+          console.error("[username-flow] ensure-profile:failure", {
+            screen: "PerfilScreen",
+            uid: user.uid,
+            reason: error?.message || String(error),
+          });
+          Alert.alert("Aviso", "Não foi possível sincronizar o username agora. Tente novamente em instantes.");
+        });
 
         const userRef = ref(database, `users/${user.uid}`);
         
-        const unsubscribeDB = onValue(userRef, (snapshot) => {
+        unsubscribeDB = onValue(userRef, (snapshot) => {
           if (snapshot.exists()) {
             const data = snapshot.val();
             
@@ -80,15 +101,22 @@ export default function PerfilScreen() {
           setLoading(false);
         });
 
-        return () => unsubscribeDB();
-
       } else {
         setLoading(false);
-        navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        if (typeof navigation.reset === "function") {
+          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        } else if (typeof navigation.replace === "function") {
+          navigation.replace("Login");
+        }
       }
     });
 
-    return () => unsubscribeAuth();
+    return () => {
+      if (unsubscribeDB) {
+        unsubscribeDB();
+      }
+      unsubscribeAuth();
+    };
   }, [navigation]);
 
   const handleSaveProfile = async () => {
@@ -115,8 +143,12 @@ export default function PerfilScreen() {
   const profileWebLink = `https://tracktrail.app/user/${username}`;
 
   const handleCopyProfileLink = async () => {
-    await Clipboard.setStringAsync(profileDeepLink);
-    Alert.alert("Link copiado", profileDeepLink);
+    try {
+      await Clipboard.setStringAsync(profileDeepLink);
+      Alert.alert("Link copiado", profileDeepLink);
+    } catch {
+      Alert.alert("Erro", "Não foi possível copiar o link agora.");
+    }
   };
 
   const handleShareProfile = async () => {

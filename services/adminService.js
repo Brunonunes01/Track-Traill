@@ -107,7 +107,11 @@ export const subscribeCurrentUserRole = (onChange) => {
       return;
     }
 
-    await ensureUserRole(user.uid, user.email || "");
+    try {
+      await ensureUserRole(user.uid, user.email || "");
+    } catch (error) {
+      console.warn("[admin] ensureUserRole failed:", error?.message || String(error));
+    }
 
     const userRef = ref(database, `${USERS_PATH}/${user.uid}`);
     detachRoleListener = onValue(userRef, (snapshot) => {

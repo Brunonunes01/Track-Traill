@@ -10,17 +10,19 @@ import {
   View,
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AlertCard from "../components/AlertCard";
 import AlertMarker from "../components/AlertMarker";
 import { TrackTrailRoute, TrailAlert } from "../models/alerts";
 import { subscribeRouteAlerts } from "../services/alertService";
+import { toCoordinate, toCoordinateArray } from "../utils/geo";
 
 type RouteDetailParams = {
   routeData: TrackTrailRoute;
 };
 
 const getMapRegion = (routeData: TrackTrailRoute) => {
-  const anchor = routeData.startPoint || routeData.rotaCompleta?.[0];
+  const anchor = toCoordinate(routeData.startPoint) || toCoordinate(routeData.rotaCompleta?.[0]);
 
   if (!anchor) {
     return {
@@ -39,9 +41,17 @@ const getMapRegion = (routeData: TrackTrailRoute) => {
   };
 };
 
-export default function RouteDetailScreen() {
-  const navigation = useNavigation<any>();
-  const { params } = useRoute<any>();
+type RouteDetailScreenProps = {
+  navigation?: any;
+  route?: any;
+};
+
+export default function RouteDetailScreen(props: RouteDetailScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const hookRoute = useRoute<any>();
+  const navigation = props.navigation || hookNavigation;
+  const insets = useSafeAreaInsets();
+  const params = props.route?.params || hookRoute.params;
   const { routeData } = (params || {}) as RouteDetailParams;
 
   const [alerts, setAlerts] = useState<TrailAlert[]>([]);
@@ -73,6 +83,23 @@ export default function RouteDetailScreen() {
     () => alerts.filter((item) => item.status === "ativo"),
     [alerts]
   );
+  const safeRoutePath = useMemo(() => toCoordinateArray(routeData?.rotaCompleta), [routeData?.rotaCompleta]);
+  const safeStartPoint = useMemo(() => toCoordinate(routeData?.startPoint), [routeData?.startPoint]);
+  const safeAlertMarkers = useMemo(
+    () =>
+      alerts
+        .map((alert) => ({
+          alert,
+          coordinate: toCoordinate({ latitude: alert.latitude, longitude: alert.longitude }),
+        }))
+        .filter(
+          (
+            item
+          ): item is { alert: TrailAlert; coordinate: { latitude: number; longitude: number } } =>
+            Boolean(item.coordinate)
+        ),
+    [alerts]
+  );
 
   if (!routeData) {
     return (
@@ -93,20 +120,20 @@ export default function RouteDetailScreen() {
           provider={PROVIDER_DEFAULT}
           initialRegion={getMapRegion(routeData)}
         >
-          {routeData.rotaCompleta && routeData.rotaCompleta.length > 0 ? (
-            <Polyline coordinates={routeData.rotaCompleta} strokeColor="#ffd700" strokeWidth={5} />
+          {safeRoutePath.length > 0 ? (
+            <Polyline coordinates={safeRoutePath} strokeColor="#ffd700" strokeWidth={5} />
           ) : null}
 
-          {routeData.startPoint ? (
-            <Marker coordinate={routeData.startPoint} title="Início da rota">
+          {safeStartPoint ? (
+            <Marker coordinate={safeStartPoint} title="Início da rota">
               <Ionicons name="flag" size={34} color="#22c55e" />
             </Marker>
           ) : null}
 
-          {alerts.map((alert) => (
+          {safeAlertMarkers.map(({ alert, coordinate }) => (
             <Marker
               key={alert.id}
-              coordinate={{ latitude: alert.latitude, longitude: alert.longitude }}
+              coordinate={coordinate}
               onPress={() => navigation.navigate("AlertDetail", { alertData: alert })}
             >
               <AlertMarker alert={alert} />
@@ -114,7 +141,7 @@ export default function RouteDetailScreen() {
           ))}
         </MapView>
 
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+        <TouchableOpacity style={[styles.backButton, { top: insets.top + 8 }]} onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
       </View>
@@ -150,8 +177,8 @@ export default function RouteDetailScreen() {
               navigation.navigate("AlertForm", {
                 routeId: routeData.id,
                 routeName: routeData.titulo,
-                latitude: routeData.startPoint?.latitude,
-                longitude: routeData.startPoint?.longitude,
+                latitude: safeStartPoint?.latitude,
+                longitude: safeStartPoint?.longitude,
               })
             }
           >

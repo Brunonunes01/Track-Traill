@@ -24,8 +24,19 @@ export default function SimpleHomeScreen({ navigation }: any) {
 
   useEffect(() => {
     const user = auth.currentUser;
+    console.log("[home] SimpleHomeScreen mounted, user:", user?.uid);
+    
+    // Safety timeout to prevent infinite loading
+    const safetyTimeout = setTimeout(() => {
+      if (loading) {
+        console.warn("[home] Safety timeout reached in SimpleHomeScreen. Releasing loading.");
+        setLoading(false);
+      }
+    }, 8000);
+
     if (!user) {
       setLoading(false);
+      clearTimeout(safetyTimeout);
       return;
     }
 

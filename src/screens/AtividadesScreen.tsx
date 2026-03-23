@@ -13,6 +13,7 @@ import {
 import MapView, { Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
 import {
   ActivityType,
   ActiveActivitySession,
@@ -48,9 +49,16 @@ const inferActivityType = (value?: string): ActivityType => {
   return "trilha";
 };
 
-export default function AtividadesScreen() {
-  const navigation = useNavigation<any>();
-  const route = useRoute<any>();
+type AtividadesScreenProps = {
+  navigation?: any;
+  route?: any;
+};
+
+export default function AtividadesScreen(props: AtividadesScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const hookRoute = useRoute<any>();
+  const navigation = props.navigation || hookNavigation;
+  const route = props.route || hookRoute;
   const insets = useSafeAreaInsets();
   const rotaGuia = route.params?.rotaSugerida;
 
@@ -66,11 +74,7 @@ export default function AtividadesScreen() {
   const [statusMessage, setStatusMessage] = useState<string>("Pronto para iniciar.");
 
   const trackedPath: Coordinate[] = useMemo(
-    () =>
-      (session?.points || []).map((point) => ({
-        latitude: point.latitude,
-        longitude: point.longitude,
-      })),
+    () => toCoordinateArray(session?.points || []),
     [session]
   );
 
@@ -78,6 +82,16 @@ export default function AtividadesScreen() {
   const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
   const isRecording = session?.status === "recording";
   const hasActiveSession = !!session && session.status !== "finished";
+  const safeSuggestedPath = useMemo(() => toCoordinateArray(rotaGuia?.rotaCompleta), [rotaGuia?.rotaCompleta]);
+  const mapInitialRegion = useMemo(
+    () =>
+      getRegionWithFallback(
+        toCoordinate(rotaGuia?.startPoint) || trackedPath[0] || null,
+        FALLBACK_REGION,
+        { latitudeDelta: 0.05, longitudeDelta: 0.05 }
+      ),
+    [rotaGuia?.startPoint, trackedPath]
+  );
 
   const stopForegroundWatch = () => {
     if (foregroundSubscription.current) {
@@ -89,54 +103,88 @@ export default function AtividadesScreen() {
   const startForegroundWatch = useCallback(async () => {
     stopForegroundWatch();
 
-    foregroundSubscription.current = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.Balanced,
-        timeInterval: 4000,
-        distanceInterval: 10,
-      },
-      async (location) => {
-        const updated = await appendForegroundPoint({
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          timestamp: location.timestamp || Date.now(),
-        });
-
-        if (updated) {
-          setSession(updated);
-          mapRef.current?.animateCamera({
-            center: {
+    try {
+      foregroundSubscription.current = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 4000,
+          distanceInterval: 10,
+        },
+        async (location) => {
+          try {
+            const updated = await appendForegroundPoint({
               latitude: location.coords.latitude,
               longitude: location.coords.longitude,
-            },
-          });
+              timestamp: location.timestamp || Date.now(),
+            });
+
+            if (updated) {
+              setSession(updated);
+              mapRef.current?.animateCamera({
+                center: {
+                  latitude: location.coords.latitude,
+                  longitude: location.coords.longitude,
+                },
+              });
+            }
+          } catch (error: any) {
+            console.warn("[activity] appendForegroundPoint failed:", error?.message || String(error));
+          }
         }
-      }
-    );
+      );
+    } catch (error: any) {
+      console.warn("[activity] startForegroundWatch failed:", error?.message || String(error));
+      setStatusMessage("Falha ao iniciar rastreamento em primeiro plano.");
+    }
   }, []);
 
   useEffect(() => {
     let mounted = true;
+    console.log("[activity] Bootstrap starting");
 
     const bootstrap = async () => {
+      // Safety timer
+      const bootstrapTimeout = setTimeout(() => {
+        if (loadingSession && mounted) {
+          console.warn("[activity] Bootstrap taking too long, releasing loader");
+          setLoadingSession(false);
+          setStatusMessage("Sincronização lenta, tente novamente se os dados não aparecerem.");
+        }
+      }, 10000);
+
       try {
+        console.log("[activity] Requesting foreground permissions");
         const foregroundPermission = await Location.requestForegroundPermissionsAsync();
         if (foregroundPermission.status !== "granted") {
+          console.warn("[activity] GPS permission denied");
           setStatusMessage("Permissão de localização necessária para gravar atividade.");
           setLoadingSession(false);
+          clearTimeout(bootstrapTimeout);
           return;
         }
 
+        console.log("[activity] Getting initial position");
         const current = await Location.getCurrentPositionAsync({});
-        if (!mounted) return;
+        if (!mounted) {
+          clearTimeout(bootstrapTimeout);
+          return;
+        }
+        
+        const startFocus = toCoordinate(rotaGuia?.startPoint) || toCoordinate(current.coords);
+        if (startFocus) {
+          console.log("[activity] Focusing map at:", startFocus);
+          mapRef.current?.animateCamera({ center: startFocus, zoom: 16 });
+        }
 
-        const startFocus = rotaGuia?.startPoint || current.coords;
-        mapRef.current?.animateCamera({ center: startFocus, zoom: 16 });
-
+        console.log("[activity] Restoring active session if any");
         const active = await getActiveSession();
-        if (!mounted) return;
+        if (!mounted) {
+          clearTimeout(bootstrapTimeout);
+          return;
+        }
 
         if (active && active.status !== "finished") {
+          console.log("[activity] Session restored:", active.id);
           setSession(active);
           setActivityType(active.activityType);
           setStatusMessage(
@@ -149,22 +197,31 @@ export default function AtividadesScreen() {
             await startForegroundWatch();
           }
         }
-      } catch {
+      } catch (error: any) {
+        console.error("[activity] Bootstrap failed:", error?.message || String(error));
         setStatusMessage("Falha ao obter GPS inicial.");
       } finally {
         if (mounted) {
           setLoadingSession(false);
+          clearTimeout(bootstrapTimeout);
         }
       }
     };
 
     bootstrap();
 
-    syncInterval.current = setInterval(async () => {
-      const active = await getActiveSession();
-      if (active && active.status !== "finished") {
-        setSession(active);
-      }
+    syncInterval.current = setInterval(() => {
+      getActiveSession()
+        .then((active) => {
+          if (!mounted) return;
+          if (active && active.status !== "finished") {
+            setSession(active);
+          }
+        })
+        .catch((error: any) => {
+          if (!mounted) return;
+          console.warn("[activity] session sync failed:", error?.message || String(error));
+        });
     }, 1500);
 
     return () => {
@@ -185,10 +242,12 @@ export default function AtividadesScreen() {
 
     try {
       const current = await Location.getCurrentPositionAsync({});
-      const startPoint = trackedPath[trackedPath.length - 1] || {
-        latitude: current.coords.latitude,
-        longitude: current.coords.longitude,
-      };
+      const safeCurrent = toCoordinate(current.coords);
+      if (!safeCurrent && trackedPath.length === 0) {
+        throw new Error("Coordenadas iniciais inválidas.");
+      }
+
+      const startPoint = trackedPath[trackedPath.length - 1] || (safeCurrent as Coordinate);
 
       const response = await startActivityTracking({
         userId: user.uid,
@@ -263,8 +322,12 @@ export default function AtividadesScreen() {
               text: "Descartar",
               style: "destructive",
               onPress: async () => {
-                await discardActiveSession();
-                setSession(null);
+                try {
+                  await discardActiveSession();
+                  setSession(null);
+                } catch (error: any) {
+                  Alert.alert("Erro", error?.message || "Não foi possível descartar a atividade.");
+                }
               },
             },
           ]
@@ -308,13 +371,15 @@ export default function AtividadesScreen() {
       const current = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
+      const safeCurrent = toCoordinate(current.coords);
+      if (!safeCurrent) {
+        Alert.alert("Localização indisponível", "Coordenadas inválidas retornadas pelo GPS.");
+        return;
+      }
 
       mapRef.current?.animateCamera(
         {
-          center: {
-            latitude: current.coords.latitude,
-            longitude: current.coords.longitude,
-          },
+          center: safeCurrent,
           zoom: 17,
         },
         { duration: 450 }
@@ -340,11 +405,12 @@ export default function AtividadesScreen() {
           ref={mapRef}
           style={styles.map}
           provider={PROVIDER_DEFAULT}
+          initialRegion={mapInitialRegion}
           showsUserLocation
           showsMyLocationButton={false}
         >
-          {rotaGuia?.rotaCompleta ? (
-            <Polyline coordinates={rotaGuia.rotaCompleta} strokeColor="rgba(249,115,22,0.45)" strokeWidth={6} />
+          {safeSuggestedPath.length > 1 ? (
+            <Polyline coordinates={safeSuggestedPath} strokeColor="rgba(249,115,22,0.45)" strokeWidth={6} />
           ) : null}
 
           {trackedPath.length > 1 ? (

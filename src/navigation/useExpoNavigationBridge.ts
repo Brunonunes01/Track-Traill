@@ -10,6 +10,7 @@ const routeMap: Record<string, string> = {
   "Próximas": "/(tabs)/proximas",
   Atividades: "/(tabs)/atividades",
   Perfil: "/(tabs)/perfil",
+  Amigos: "/friends",
   RouteDetail: "/route-detail",
   AlertForm: "/alert-form",
   AlertDetail: "/alert-detail",
@@ -18,6 +19,7 @@ const routeMap: Record<string, string> = {
   Configuracoes: "/configuracoes",
   Ajuda: "/ajuda",
   Admin: "/admin",
+  AdminDashboard: "/admin",
 };
 
 export function useExpoNavigationBridge() {

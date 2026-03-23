@@ -1,4 +1,5 @@
 const OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
+const WEATHER_TIMEOUT_MS = 10000;
 
 const parseWeatherData = (data) => {
   const current = data?.current || {};
@@ -32,7 +33,22 @@ export const getWeatherByCoordinates = async (latitude, longitude) => {
     "&hourly=precipitation_probability" +
     "&wind_speed_unit=kmh&timezone=auto";
 
-  const response = await fetch(`${OPEN_METEO_BASE_URL}?${query}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), WEATHER_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(`${OPEN_METEO_BASE_URL}?${query}`, {
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error("Tempo de espera excedido ao consultar o clima.");
+    }
+    throw new Error("Falha de rede ao consultar o clima.");
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!response.ok) {
     throw new Error("Falha ao consultar a API de clima.");

@@ -2,7 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import { push, ref, set } from "firebase/database";
-import { auth, database } from "../../services/connectionFirebase";
+import { auth, database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
+import { toCoordinate } from "../utils/geo";
 
 export type ActivityType = "bike" | "corrida" | "caminhada" | "trilha";
 export type TrackingMode = "background" | "foreground";
@@ -88,6 +89,27 @@ const appendPoint = (session: ActiveActivitySession, point: ActivityPoint) => {
   return session;
 };
 
+const toActivityPoint = (
+  value: any,
+  fallbackTimestamp = Date.now()
+): ActivityPoint | null => {
+  const coordinate = toCoordinate(value);
+  if (!coordinate) {
+    return null;
+  }
+
+  const timestamp =
+    typeof value?.timestamp === "number" && Number.isFinite(value.timestamp)
+      ? value.timestamp
+      : fallbackTimestamp;
+
+  return {
+    latitude: coordinate.latitude,
+    longitude: coordinate.longitude,
+    timestamp,
+  };
+};
+
 const saveSession = async (session: ActiveActivitySession | null) => {
   if (!session) {
     await AsyncStorage.removeItem(ACTIVE_SESSION_KEY);
@@ -116,16 +138,20 @@ const stopBackgroundTrackingIfRunning = async () => {
 };
 
 const ensurePermissions = async () => {
-  const foreground = await Location.requestForegroundPermissionsAsync();
-  if (foreground.status !== "granted") {
-    throw new Error("Permissão de localização negada.");
+  try {
+    const foreground = await Location.requestForegroundPermissionsAsync();
+    if (foreground.status !== "granted") {
+      throw new Error("Permissão de localização negada.");
+    }
+
+    const background = await Location.requestBackgroundPermissionsAsync();
+
+    return {
+      hasBackground: background.status === "granted",
+    };
+  } catch (error: any) {
+    throw new Error(error?.message || "Não foi possível validar as permissões de localização.");
   }
-
-  const background = await Location.requestBackgroundPermissionsAsync();
-
-  return {
-    hasBackground: background.status === "granted",
-  };
 };
 
 const startBackgroundTracking = async () => {
@@ -154,30 +180,33 @@ const startBackgroundTracking = async () => {
 if (!TaskManager.isTaskDefined(TRACKING_TASK_NAME)) {
   TaskManager.defineTask(TRACKING_TASK_NAME, async ({ data, error }: TaskManager.TaskManagerTaskBody<any>) => {
     if (error) {
+      console.warn("[activity] background task received error:", error?.message || String(error));
       return;
     }
 
-    const locations = (data as any)?.locations as Location.LocationObject[] | undefined;
-    if (!locations || locations.length === 0) {
-      return;
+    try {
+      const locations = (data as any)?.locations as Location.LocationObject[] | undefined;
+      if (!locations || locations.length === 0) {
+        return;
+      }
+
+      const activeSession = await getActiveSession();
+      if (!activeSession || activeSession.status !== "recording") {
+        return;
+      }
+
+      const updatedSession = { ...activeSession };
+
+      for (const location of locations) {
+        const safePoint = toActivityPoint(location.coords, location.timestamp || Date.now());
+        if (!safePoint) continue;
+        appendPoint(updatedSession, safePoint);
+      }
+
+      await saveSession(updatedSession);
+    } catch (taskError: any) {
+      console.warn("[activity] background task failed:", taskError?.message || String(taskError));
     }
-
-    const activeSession = await getActiveSession();
-    if (!activeSession || activeSession.status !== "recording") {
-      return;
-    }
-
-    const updatedSession = { ...activeSession };
-
-    for (const location of locations) {
-      appendPoint(updatedSession, {
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        timestamp: location.timestamp || Date.now(),
-      });
-    }
-
-    await saveSession(updatedSession);
   });
 }
 
@@ -191,12 +220,13 @@ export const appendForegroundPoint = async (coords: {
     return null;
   }
 
+  const safePoint = toActivityPoint(coords, coords.timestamp || Date.now());
+  if (!safePoint) {
+    return activeSession;
+  }
+
   const updatedSession = { ...activeSession };
-  appendPoint(updatedSession, {
-    latitude: coords.latitude,
-    longitude: coords.longitude,
-    timestamp: coords.timestamp || Date.now(),
-  });
+  appendPoint(updatedSession, safePoint);
 
   await saveSession(updatedSession);
   return updatedSession;
@@ -388,7 +418,6 @@ export const saveFinishedSessionAsRoute = async (
     throw new Error("Informe um nome para a rota.");
   }
 
-  const duration = getSessionDurationSeconds(session);
   const path = session.points.map((point) => ({
     latitude: point.latitude,
     longitude: point.longitude,
@@ -397,42 +426,81 @@ export const saveFinishedSessionAsRoute = async (
   const firstPoint = path[0];
   const lastPoint = path[path.length - 1];
   const activityType = input.activityType || session.activityType;
+  const activitySaved = await saveFinishedSessionAsActivity(session, activityType);
 
   const userEmail = auth.currentUser?.email || "usuario@tracktrail";
 
-  const atividadeRef = push(ref(database, `users/${session.userId}/atividades`));
-  await set(atividadeRef, {
-    tipo: activityType,
-    cidade: "Rota registrada via GPS",
-    data: new Date().toLocaleDateString("pt-BR"),
-    duracao: duration,
-    distancia: session.distanceKm.toFixed(2),
-    rota: path,
-    criadoEm: new Date().toISOString(),
-  });
-
   const rotaRef = push(ref(database, "rotas_pendentes"));
-  await set(rotaRef, {
-    nome: routeName,
-    tipo: activityType,
-    dificuldade: "Média",
-    distancia: `${session.distanceKm.toFixed(2)} km`,
-    descricao: input.description?.trim() || "Rota gerada automaticamente por atividade GPS.",
-    startPoint: firstPoint,
-    endPoint: lastPoint,
-    rotaCompleta: path,
-    sugeridoPor: session.userId,
-    emailAutor: userEmail,
-    status: "pendente",
-    criadoEm: new Date().toISOString(),
-    origem: "activity_tracking",
-    activityId: atividadeRef.key,
-  });
+  try {
+    await set(rotaRef, {
+      nome: routeName,
+      tipo: activityType,
+      dificuldade: "Média",
+      distancia: `${session.distanceKm.toFixed(2)} km`,
+      descricao: input.description?.trim() || "Rota gerada automaticamente por atividade GPS.",
+      startPoint: firstPoint,
+      endPoint: lastPoint,
+      rotaCompleta: path,
+      sugeridoPor: session.userId,
+      emailAutor: userEmail,
+      status: "pendente",
+      criadoEm: new Date().toISOString(),
+      origem: "activity_tracking",
+      activityId: activitySaved.activityId,
+    });
+  } catch (error) {
+    throw new Error(normalizeFirebaseErrorMessage(error, "Não foi possível salvar a rota."));
+  }
 
   await saveSession(null);
 
   return {
-    activityId: atividadeRef.key,
+    activityId: activitySaved.activityId,
     routeId: rotaRef.key,
+  };
+};
+
+export const saveFinishedSessionAsActivity = async (
+  session: ActiveActivitySession,
+  activityTypeOverride?: ActivityType
+) => {
+  if (session.status !== "finished") {
+    throw new Error("Finalize a atividade antes de salvar.");
+  }
+
+  if (session.points.length < 2) {
+    throw new Error("Trajeto muito curto. Grave mais pontos antes de salvar.");
+  }
+
+  const duration = getSessionDurationSeconds(session);
+  const activityType = activityTypeOverride || session.activityType;
+  const path = session.points.map((point) => ({
+    latitude: point.latitude,
+    longitude: point.longitude,
+  }));
+
+  const atividadeRef = push(ref(database, `users/${session.userId}/atividades`));
+  try {
+    await set(atividadeRef, {
+      tipo: activityType,
+      cidade: "Rota registrada via GPS",
+      data: new Date().toLocaleDateString("pt-BR"),
+      duracao: duration,
+      distancia: session.distanceKm.toFixed(2),
+      rota: path,
+      criadoEm: new Date().toISOString(),
+      origem: "activity_tracking",
+      sessionId: session.id,
+    });
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível salvar a atividade.")
+    );
+  }
+
+  return {
+    activityId: atividadeRef.key,
+    durationSeconds: duration,
+    path,
   };
 };

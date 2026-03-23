@@ -19,9 +19,9 @@ import {
 } from 'react-native';
 import MapView, { MapPressEvent, Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import { auth, database } from '../../services/connectionFirebase';
+import { FALLBACK_REGION, toCoordinate, toCoordinateArray } from '../utils/geo';
 
 type Coordinate = { latitude: number; longitude: number; };
-
 export default function SuggestRouteScreen() {
   const isFocused = useIsFocused(); // Destrói o mapa quando não está na tela
 
@@ -44,29 +44,56 @@ export default function SuggestRouteScreen() {
   const dificuldades = ['Fácil', 'Média', 'Difícil'];
 
   useEffect(() => {
+    let mounted = true;
+    let cameraTimeout: ReturnType<typeof setTimeout> | null = null;
+
     if (isFocused) {
-        (async () => {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') return;
-        let currentLocation = await Location.getCurrentPositionAsync({});
-        setTimeout(() => {
-            mapRef.current?.animateCamera({ center: currentLocation.coords, zoom: 15 });
-        }, 300);
-        })();
+      (async () => {
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status !== 'granted') return;
+          const currentLocation = await Location.getCurrentPositionAsync({});
+          if (!mounted) return;
+          const safeCurrent = toCoordinate(currentLocation.coords);
+          if (!safeCurrent) return;
+          cameraTimeout = setTimeout(() => {
+            mapRef.current?.animateCamera({ center: safeCurrent, zoom: 15 });
+          }, 300);
+        } catch (error: any) {
+          console.warn("[map] SuggestRoute initial location failed:", error?.message || String(error));
+        }
+      })();
     }
+
+    return () => {
+      mounted = false;
+      if (cameraTimeout) {
+        clearTimeout(cameraTimeout);
+      }
+    };
   }, [isFocused]);
 
   useEffect(() => {
     const oficiaisRef = ref(database, 'rotas_oficiais');
-    const unsubscribe = onValue(oficiaisRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.val();
-        const listaRotas = Object.keys(data).map(key => ({ id: key, ...data[key] }));
-        setRotasOficiais(listaRotas);
-      } else {
-        setRotasOficiais([]);
+    const unsubscribe = onValue(
+      oficiaisRef,
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.val();
+          const listaRotas = Object.keys(data).map((key) => ({
+            id: key,
+            ...data[key],
+            rotaCompleta: toCoordinateArray(data[key]?.rotaCompleta),
+          }));
+          setRotasOficiais(listaRotas);
+        } else {
+          setRotasOficiais([]);
+        }
+      },
+      (error) => {
+        console.warn("[map] SuggestRoute official routes listener failed:", error?.message || String(error));
       }
-    });
+    );
     return () => unsubscribe();
   }, []);
 
@@ -77,7 +104,12 @@ export default function SuggestRouteScreen() {
       const response = await fetch(url);
       const data = await response.json();
       if (data.routes && data.routes.length > 0) {
-        const coordsDaEstrada = data.routes[0].geometry.coordinates.map((coord: [number, number]) => ({ latitude: coord[1], longitude: coord[0] }));
+        const coordsDaEstrada = toCoordinateArray(
+          data.routes[0].geometry.coordinates.map((coord: [number, number]) => ({
+            latitude: coord[1],
+            longitude: coord[0],
+          }))
+        );
         setRouteCoordinates(coordsDaEstrada);
         const distMetros = data.routes[0].distance;
         setDistanciaCalculada((distMetros / 1000).toFixed(1) + ' km');
@@ -94,7 +126,11 @@ export default function SuggestRouteScreen() {
   };
 
   const handleMapPress = (e: MapPressEvent) => {
-    const coords = e.nativeEvent.coordinate;
+    const coords = toCoordinate(e.nativeEvent.coordinate);
+    if (!coords) {
+      console.warn("[map] SuggestRoute ignored invalid coordinate from map press");
+      return;
+    }
     if (!startPoint) {
       setStartPoint(coords);
     } else if (!endPoint) {
@@ -132,7 +168,15 @@ export default function SuggestRouteScreen() {
   return (
     <View style={styles.container}>
       {isFocused && (
-        <MapView ref={mapRef} style={styles.map} provider={PROVIDER_DEFAULT} showsUserLocation={true} showsMyLocationButton={false} onPress={handleMapPress}>
+        <MapView
+          ref={mapRef}
+          style={styles.map}
+          provider={PROVIDER_DEFAULT}
+          initialRegion={FALLBACK_REGION}
+          showsUserLocation={true}
+          showsMyLocationButton={false}
+          onPress={handleMapPress}
+        >
             {rotasOficiais.map(rota => rota.rotaCompleta && (
                 <Polyline key={`oficial-${rota.id}`} coordinates={rota.rotaCompleta} strokeColor="rgba(37, 99, 235, 0.5)" strokeWidth={5} />
             ))}

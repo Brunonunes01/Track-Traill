@@ -1,11 +1,10 @@
 import { Ionicons } from "@expo/vector-icons";
-import * as ImagePicker from "expo-image-picker";
+import { useNavigation } from "@react-navigation/native";
 import { onAuthStateChanged } from "firebase/auth";
-import { onValue, ref } from "firebase/database";
 import React, { useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
+  ActivityIndicator,
   FlatList,
   Image,
   ImageBackground,
@@ -15,13 +14,30 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { auth, database } from "../../services/connectionFirebase";
+import { auth } from "../../services/connectionFirebase";
 import {
   addCommunityComment,
-  createCommunityPost,
-  getLatestUserActivity,
   subscribeCommunityPosts,
 } from "../../services/communityService";
+import {
+  subscribeFriendships,
+  subscribeUsers,
+} from "../../services/friendsService";
+
+type AppUser = {
+  uid: string;
+  fullName?: string;
+  username?: string;
+  photoUrl?: string;
+};
+
+type Friendship = {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  status: "pending" | "accepted" | "rejected";
+  createdAt?: string;
+};
 
 type CommunityComment = {
   id: string;
@@ -31,41 +47,81 @@ type CommunityComment = {
   createdAt?: string;
 };
 
-type CommunityPost = {
+type SharedActivityPost = {
   id: string;
+  postType?: string;
+  visibility?: string;
   authorId: string;
-  authorName: string;
-  text: string;
-  imageUri?: string | null;
+  authorName?: string;
+  authorPhotoUrl?: string | null;
+  activityId?: string | null;
+  routeId?: string | null;
+  routeName?: string | null;
+  activityType?: string;
+  distanceKm?: number;
+  durationSec?: number;
+  caption?: string;
+  activityDate?: string;
   createdAt?: string;
+  routeSnapshot?: {
+    points?: { latitude: number; longitude: number }[];
+    startPoint?: { latitude: number; longitude: number } | null;
+    endPoint?: { latitude: number; longitude: number } | null;
+  };
   comments?: CommunityComment[];
-  route?: {
-    id: string;
-    tipo?: string;
-    distancia?: string | number;
-    data?: string;
-    cidade?: string;
-  } | null;
 };
 
-const formatDate = (dateString?: string) => {
-  if (!dateString) return "";
-  return new Date(dateString).toLocaleString("pt-BR");
+type CommunityScreenProps = {
+  navigation?: any;
 };
 
-export default function CommunityScreen() {
-  const [loading, setLoading] = useState(true);
-  const [publishing, setPublishing] = useState(false);
+const formatDate = (value?: string) => {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleString("pt-BR");
+};
+
+const formatDuration = (totalSeconds?: number) => {
+  const sec = Number(totalSeconds || 0);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+
+  if (h > 0) {
+    return `${h.toString().padStart(2, "0")}:${m.toString().padStart(2, "0")}:${s
+      .toString()
+      .padStart(2, "0")}`;
+  }
+
+  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+};
+
+const getDisplayName = (post: SharedActivityPost, usersById: Record<string, AppUser>) => {
+  const user = usersById[post.authorId];
+  return (
+    post.authorName || user?.fullName || user?.username || auth.currentUser?.email || "Usuário"
+  );
+};
+
+const getPhotoUrl = (post: SharedActivityPost, usersById: Record<string, AppUser>) => {
+  const user = usersById[post.authorId];
+  return post.authorPhotoUrl || user?.photoUrl || null;
+};
+
+export default function CommunityScreen(props: CommunityScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const navigation = props.navigation || hookNavigation;
+
   const [uid, setUid] = useState("");
-  const [authorName, setAuthorName] = useState("Usuário");
-  const [posts, setPosts] = useState<CommunityPost[]>([]);
-
-  const [postText, setPostText] = useState("");
-  const [selectedImageUri, setSelectedImageUri] = useState<string | null>(null);
-  const [attachedRoute, setAttachedRoute] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [posts, setPosts] = useState<SharedActivityPost[]>([]);
+  const [users, setUsers] = useState<AppUser[]>([]);
+  const [friendships, setFriendships] = useState<Friendship[]>([]);
 
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentingPostId, setCommentingPostId] = useState<string | null>(null);
+  const [openCommentsPostId, setOpenCommentsPostId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
@@ -76,182 +132,226 @@ export default function CommunityScreen() {
   }, []);
 
   useEffect(() => {
-    const unsubscribePosts = subscribeCommunityPosts((list: CommunityPost[]) => {
-      setPosts(list);
-      setLoading(false);
-    });
+    const unsubscribePosts = subscribeCommunityPosts(
+      (list: SharedActivityPost[]) => {
+        setPosts(list);
+        setLoading(false);
+      },
+      (error: any) => {
+        console.warn("[community] posts subscription error:", error?.message || String(error));
+        setLoading(false);
+      }
+    );
 
     return unsubscribePosts;
   }, []);
 
   useEffect(() => {
-    if (!uid) {
-      setAuthorName("Usuário");
-      return;
-    }
-
-    const unsubscribeUser = onValue(ref(database, `users/${uid}`), (snapshot) => {
-      const data = snapshot.val() || {};
-      setAuthorName(data.fullName || data.username || auth.currentUser?.email || "Usuário");
-    });
-
-    return unsubscribeUser;
-  }, [uid]);
-
-  const canPublish = useMemo(() => {
-    return postText.trim().length > 0 && !publishing;
-  }, [postText, publishing]);
-
-  const handlePickImage = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (permission.status !== "granted") {
-      Alert.alert("Permissão necessária", "Permita acesso à galeria para anexar foto.");
-      return;
-    }
-
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 0.8,
-    });
-
-    if (!result.canceled && result.assets?.length) {
-      setSelectedImageUri(result.assets[0].uri);
-    }
-  };
-
-  const handleAttachLatestRoute = async () => {
-    if (!uid) {
-      Alert.alert("Erro", "Você precisa estar logado.");
-      return;
-    }
-
-    try {
-      const latestActivity = await getLatestUserActivity(uid);
-      if (!latestActivity) {
-        Alert.alert("Sem rota", "Nenhuma atividade encontrada para anexar.");
-        return;
+    const unsubscribeUsers = subscribeUsers(
+      (list: AppUser[]) => {
+        setUsers(list);
+      },
+      (error: any) => {
+        console.warn("[community] users subscription error:", error?.message || String(error));
       }
+    );
 
-      setAttachedRoute(latestActivity);
-    } catch (error: any) {
-      Alert.alert("Erro", error.message || "Não foi possível anexar a rota.");
-    }
-  };
+    const unsubscribeFriendships = subscribeFriendships(
+      (list: Friendship[]) => {
+        setFriendships(list);
+      },
+      (error: any) => {
+        console.warn("[community] friendships subscription error:", error?.message || String(error));
+      }
+    );
 
-  const handlePublishPost = async () => {
-    if (!uid) {
-      Alert.alert("Erro", "Você precisa estar logado.");
-      return;
-    }
+    return () => {
+      unsubscribeUsers();
+      unsubscribeFriendships();
+    };
+  }, []);
+
+  const usersById = useMemo(() => {
+    return users.reduce((acc: Record<string, AppUser>, item) => {
+      acc[item.uid] = item;
+      return acc;
+    }, {});
+  }, [users]);
+
+  const friendIds = useMemo(() => {
+    if (!uid) return new Set<string>();
+
+    const ids = friendships
+      .filter(
+        (item) =>
+          item.status === "accepted" && (item.senderId === uid || item.receiverId === uid)
+      )
+      .map((item) => (item.senderId === uid ? item.receiverId : item.senderId));
+
+    return new Set(ids);
+  }, [friendships, uid]);
+
+  const visiblePosts = useMemo(() => {
+    if (!uid) return [];
+
+    return posts
+      .filter((post) => post.postType === "activity_share")
+      .filter((post) => post.authorId === uid || friendIds.has(post.authorId));
+  }, [friendIds, posts, uid]);
+
+  const handleAddComment = async (post: SharedActivityPost) => {
+    const text = (commentInputs[post.id] || "").trim();
+    if (!text || !uid) return;
 
     try {
-      setPublishing(true);
-      await createCommunityPost({
-        authorId: uid,
-        authorName,
-        text: postText,
-        imageUri: selectedImageUri,
-        route: attachedRoute,
-      });
+      setCommentingPostId(post.id);
+      const authorName =
+        usersById[uid]?.fullName || usersById[uid]?.username || auth.currentUser?.email || "Usuário";
 
-      setPostText("");
-      setSelectedImageUri(null);
-      setAttachedRoute(null);
-    } catch (error: any) {
-      Alert.alert("Erro", error.message || "Não foi possível publicar seu post.");
-    } finally {
-      setPublishing(false);
-    }
-  };
-
-  const handleAddComment = async (postId: string) => {
-    const text = (commentInputs[postId] || "").trim();
-
-    if (!text) {
-      Alert.alert("Comentário vazio", "Digite algo para comentar.");
-      return;
-    }
-
-    if (!uid) {
-      Alert.alert("Erro", "Você precisa estar logado.");
-      return;
-    }
-
-    try {
-      setCommentingPostId(postId);
       await addCommunityComment({
-        postId,
+        postId: post.id,
         authorId: uid,
         authorName,
         text,
       });
 
-      setCommentInputs((prev) => ({ ...prev, [postId]: "" }));
+      setCommentInputs((prev) => ({ ...prev, [post.id]: "" }));
     } catch (error: any) {
-      Alert.alert("Erro", error.message || "Não foi possível adicionar comentário.");
+      Alert.alert("Erro", error?.message || "Não foi possível comentar agora.");
     } finally {
       setCommentingPostId(null);
     }
   };
 
-  const renderPost = ({ item }: { item: CommunityPost }) => {
+  const handleOpenRoute = (post: SharedActivityPost) => {
+    const points = post.routeSnapshot?.points || [];
+    if (points.length < 2) return;
+
+    const authorName = getDisplayName(post, usersById);
+    const routeData = {
+      id: post.routeId || `shared-${post.id}`,
+      titulo: post.routeName || `Rota compartilhada por ${authorName}`,
+      tipo: post.activityType || "trilha",
+      descricao: post.caption || "Atividade compartilhada no feed de amigos.",
+      dificuldade: "Não informada",
+      distancia: `${Number(post.distanceKm || 0).toFixed(2)} km`,
+      startPoint: post.routeSnapshot?.startPoint || points[0],
+      endPoint: post.routeSnapshot?.endPoint || points[points.length - 1],
+      rotaCompleta: points,
+    };
+
+    navigation.navigate("RouteDetail", { routeData });
+  };
+
+  const renderPost = ({ item }: { item: SharedActivityPost }) => {
+    const authorName = getDisplayName(item, usersById);
+    const authorPhoto = getPhotoUrl(item, usersById);
+    const comments = item.comments || [];
+    const isCommentsOpen = openCommentsPostId === item.id;
+    const hasRoute = (item.routeSnapshot?.points || []).length > 1;
+
     return (
       <View style={styles.postCard}>
         <View style={styles.postHeader}>
-          <View>
-            <Text style={styles.postAuthor}>{item.authorName || "Usuário"}</Text>
-            <Text style={styles.postDate}>{formatDate(item.createdAt)}</Text>
+          <View style={styles.avatarWrap}>
+            {authorPhoto ? (
+              <Image source={{ uri: authorPhoto }} style={styles.avatarImage} />
+            ) : (
+              <Text style={styles.avatarText}>{authorName.charAt(0).toUpperCase()}</Text>
+            )}
+          </View>
+
+          <View style={{ flex: 1 }}>
+            <Text style={styles.authorName}>{authorName}</Text>
+            <Text style={styles.dateText}>{formatDate(item.createdAt)}</Text>
+          </View>
+
+          <View style={styles.typeBadge}>
+            <Text style={styles.typeBadgeText}>{item.activityType || "atividade"}</Text>
           </View>
         </View>
 
-        <Text style={styles.postText}>{item.text}</Text>
-
-        {item.imageUri ? <Image source={{ uri: item.imageUri }} style={styles.postImage} /> : null}
-
-        {item.route ? (
-          <View style={styles.routeBox}>
-            <Text style={styles.routeTitle}>Rota vinculada</Text>
-            <Text style={styles.routeText}>Tipo: {item.route.tipo || "Atividade"}</Text>
-            <Text style={styles.routeText}>Distância: {item.route.distancia || 0} km</Text>
-            <Text style={styles.routeText}>Data: {item.route.data || "-"}</Text>
+        <View style={styles.metricsRow}>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Distância</Text>
+            <Text style={styles.metricValue}>{Number(item.distanceKm || 0).toFixed(2)} km</Text>
           </View>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Duração</Text>
+            <Text style={styles.metricValue}>{formatDuration(item.durationSec)}</Text>
+          </View>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Data atividade</Text>
+            <Text style={styles.metricValue}>{formatDate(item.activityDate || item.createdAt)}</Text>
+          </View>
+        </View>
+
+        {item.caption ? <Text style={styles.captionText}>{item.caption}</Text> : null}
+
+        {item.routeName ? (
+          <Text style={styles.routeNameText}>Rota: {item.routeName}</Text>
         ) : null}
 
-        <Text style={styles.commentsTitle}>Comentários</Text>
-        {(item.comments || []).length === 0 ? (
-          <Text style={styles.emptyCommentText}>Seja o primeiro a comentar.</Text>
-        ) : (
-          (item.comments || []).map((comment) => (
-            <View key={comment.id} style={styles.commentCard}>
-              <Text style={styles.commentAuthor}>{comment.authorName}</Text>
-              <Text style={styles.commentText}>{comment.text}</Text>
-            </View>
-          ))
-        )}
-
-        <View style={styles.commentInputRow}>
-          <TextInput
-            style={styles.commentInput}
-            value={commentInputs[item.id] || ""}
-            onChangeText={(value) =>
-              setCommentInputs((prev) => ({ ...prev, [item.id]: value }))
-            }
-            placeholder="Adicionar comentário"
-            placeholderTextColor="#888"
-          />
+        <View style={styles.actionsRow}>
           <TouchableOpacity
-            style={styles.commentButton}
-            onPress={() => handleAddComment(item.id)}
-            disabled={commentingPostId === item.id}
+            style={[styles.actionBtn, !hasRoute ? styles.actionBtnDisabled : null]}
+            disabled={!hasRoute}
+            onPress={() => handleOpenRoute(item)}
           >
-            {commentingPostId === item.id ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="send" size={18} color="#fff" />
-            )}
+            <Ionicons name="map-outline" size={16} color="#111827" />
+            <Text style={styles.actionBtnText}>Ver rota no mapa</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.commentsToggleBtn}
+            onPress={() => setOpenCommentsPostId((current) => (current === item.id ? null : item.id))}
+          >
+            <Ionicons name="chatbubble-outline" size={16} color="#d1d5db" />
+            <Text style={styles.commentsToggleText}>Comentários ({comments.length})</Text>
           </TouchableOpacity>
         </View>
+
+        {isCommentsOpen ? (
+          <View style={styles.commentsBlock}>
+            {comments.length === 0 ? (
+              <Text style={styles.emptyText}>Sem comentários ainda.</Text>
+            ) : (
+              comments.map((comment) => (
+                <View key={comment.id} style={styles.commentCard}>
+                  <Text style={styles.commentAuthor}>{comment.authorName}</Text>
+                  <Text style={styles.commentText}>{comment.text}</Text>
+                  <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
+                </View>
+              ))
+            )}
+
+            <View style={styles.commentInputRow}>
+              <TextInput
+                style={styles.commentInput}
+                value={commentInputs[item.id] || ""}
+                onChangeText={(value) =>
+                  setCommentInputs((prev) => ({
+                    ...prev,
+                    [item.id]: value,
+                  }))
+                }
+                placeholder="Comentar atividade"
+                placeholderTextColor="#6b7280"
+              />
+              <TouchableOpacity
+                style={styles.commentSendBtn}
+                onPress={() => handleAddComment(item)}
+                disabled={commentingPostId === item.id}
+              >
+                {commentingPostId === item.id ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Ionicons name="send" size={16} color="#fff" />
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : null}
       </View>
     );
   };
@@ -259,66 +359,29 @@ export default function CommunityScreen() {
   return (
     <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
       <View style={styles.overlay}>
-        <View style={styles.createCard}>
-          <Text style={styles.createTitle}>Criar publicação</Text>
-          <TextInput
-            style={styles.postInput}
-            value={postText}
-            onChangeText={setPostText}
-            placeholder="Compartilhe sua trilha de hoje"
-            placeholderTextColor="#888"
-            multiline
-          />
-
-          {selectedImageUri ? <Image source={{ uri: selectedImageUri }} style={styles.previewImage} /> : null}
-
-          {attachedRoute ? (
-            <View style={styles.attachedRouteBox}>
-              <Text style={styles.attachedRouteText}>
-                Rota: {attachedRoute.tipo} - {attachedRoute.distancia || 0} km
-              </Text>
-              <TouchableOpacity onPress={() => setAttachedRoute(null)}>
-                <Ionicons name="close-circle" size={18} color="#ef4444" />
-              </TouchableOpacity>
-            </View>
-          ) : null}
-
-          <View style={styles.createActions}>
-            <TouchableOpacity style={styles.secondaryBtn} onPress={handlePickImage}>
-              <Ionicons name="image" size={18} color="#ddd" />
-              <Text style={styles.secondaryBtnText}>Foto</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.secondaryBtn} onPress={handleAttachLatestRoute}>
-              <Ionicons name="map" size={18} color="#ddd" />
-              <Text style={styles.secondaryBtnText}>Última rota</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[styles.primaryBtn, !canPublish && styles.primaryBtnDisabled]}
-              onPress={handlePublishPost}
-              disabled={!canPublish}
-            >
-              {publishing ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Text style={styles.primaryBtnText}>Publicar</Text>
-              )}
-            </TouchableOpacity>
-          </View>
+        <View style={styles.headerCard}>
+          <Text style={styles.headerTitle}>Feed dos amigos</Text>
+          <Text style={styles.headerSubtitle}>Atividades e rotas compartilhadas por quem você acompanha</Text>
         </View>
 
         {loading ? (
-          <View style={styles.loadingBlock}>
+          <View style={styles.loadingWrap}>
             <ActivityIndicator size="large" color="#1e4db7" />
           </View>
         ) : (
           <FlatList
-            data={posts}
+            data={visiblePosts}
             keyExtractor={(item) => item.id}
-            renderItem={renderPost}
             contentContainerStyle={styles.listContent}
-            ListEmptyComponent={<Text style={styles.emptyFeed}>Nenhuma publicação ainda.</Text>}
+            renderItem={renderPost}
+            ListEmptyComponent={
+              <View style={styles.emptyBlock}>
+                <Text style={styles.emptyTitle}>Sem compartilhamentos por enquanto</Text>
+                <Text style={styles.emptyText}>
+                  Finalize uma atividade e compartilhe para iniciar a comunidade entre amigos.
+                </Text>
+              </View>
+            }
           />
         )}
       </View>
@@ -327,215 +390,236 @@ export default function CommunityScreen() {
 }
 
 const styles = StyleSheet.create({
-  background: {
-    flex: 1,
-  },
+  background: { flex: 1 },
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.75)",
+    backgroundColor: "rgba(2,6,23,0.86)",
     padding: 12,
   },
-  createCard: {
-    backgroundColor: "#1e1e1e",
+  headerCard: {
+    backgroundColor: "#111827",
     borderWidth: 1,
-    borderColor: "#303030",
+    borderColor: "#1f2937",
     borderRadius: 14,
     padding: 12,
     marginBottom: 10,
   },
-  createTitle: {
+  headerTitle: {
     color: "#fff",
-    fontWeight: "700",
-    fontSize: 16,
-    marginBottom: 8,
+    fontSize: 18,
+    fontWeight: "800",
   },
-  postInput: {
-    minHeight: 74,
-    backgroundColor: "#151515",
-    borderWidth: 1,
-    borderColor: "#333",
-    borderRadius: 10,
-    color: "#fff",
-    padding: 10,
-    textAlignVertical: "top",
-    marginBottom: 8,
-  },
-  previewImage: {
-    width: "100%",
-    height: 160,
-    borderRadius: 10,
-    marginBottom: 8,
-  },
-  attachedRouteBox: {
-    backgroundColor: "#151515",
-    borderWidth: 1,
-    borderColor: "#333",
-    borderRadius: 10,
-    padding: 8,
-    marginBottom: 8,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  attachedRouteText: {
-    color: "#ddd",
-    fontSize: 12,
-  },
-  createActions: {
-    flexDirection: "row",
-    gap: 8,
-    alignItems: "center",
-  },
-  secondaryBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5,
-    backgroundColor: "#2b2b2b",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-  },
-  secondaryBtnText: {
-    color: "#ddd",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  primaryBtn: {
-    marginLeft: "auto",
-    backgroundColor: "#1e4db7",
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
-    minWidth: 88,
-    alignItems: "center",
-  },
-  primaryBtnDisabled: {
-    opacity: 0.45,
-  },
-  primaryBtnText: {
-    color: "#fff",
-    fontWeight: "700",
+  headerSubtitle: {
+    marginTop: 4,
+    color: "#9ca3af",
     fontSize: 13,
   },
-  loadingBlock: {
+  loadingWrap: {
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
+    justifyContent: "center",
   },
   listContent: {
-    paddingBottom: 30,
+    paddingBottom: 26,
+    gap: 10,
   },
   postCard: {
-    backgroundColor: "#1e1e1e",
-    borderWidth: 1,
-    borderColor: "#303030",
+    backgroundColor: "#0f172a",
     borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#1f2937",
     padding: 12,
-    marginBottom: 10,
   },
   postHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 8,
+    gap: 10,
+    marginBottom: 10,
   },
-  postAuthor: {
+  avatarWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    overflow: "hidden",
+    backgroundColor: "#1e293b",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarImage: {
+    width: "100%",
+    height: "100%",
+  },
+  avatarText: {
+    color: "#f8fafc",
+    fontWeight: "800",
+    fontSize: 16,
+  },
+  authorName: {
     color: "#fff",
+    fontSize: 15,
     fontWeight: "700",
-    fontSize: 14,
   },
-  postDate: {
-    color: "#9d9d9d",
+  dateText: {
+    color: "#9ca3af",
     fontSize: 11,
     marginTop: 2,
   },
-  postText: {
-    color: "#e8e8e8",
-    fontSize: 14,
-    marginBottom: 8,
-  },
-  postImage: {
-    width: "100%",
-    height: 190,
-    borderRadius: 10,
-    marginBottom: 8,
-  },
-  routeBox: {
-    backgroundColor: "#151515",
+  typeBadge: {
+    backgroundColor: "rgba(30,77,183,0.22)",
     borderWidth: 1,
-    borderColor: "#333",
+    borderColor: "rgba(30,77,183,0.45)",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  typeBadgeText: {
+    color: "#bfdbfe",
+    fontWeight: "700",
+    fontSize: 11,
+    textTransform: "capitalize",
+  },
+  metricsRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  metricItem: {
+    flex: 1,
+    backgroundColor: "#111827",
     borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#1f2937",
     padding: 8,
-    marginBottom: 8,
   },
-  routeTitle: {
-    color: "#fff",
+  metricLabel: {
+    color: "#9ca3af",
+    fontSize: 10,
+    marginBottom: 4,
+  },
+  metricValue: {
+    color: "#f8fafc",
     fontWeight: "700",
-    marginBottom: 3,
-    fontSize: 13,
-  },
-  routeText: {
-    color: "#bbb",
     fontSize: 12,
   },
-  commentsTitle: {
-    color: "#fff",
-    fontWeight: "700",
-    marginTop: 4,
-    marginBottom: 6,
-    fontSize: 13,
+  captionText: {
+    color: "#e5e7eb",
+    marginTop: 10,
+    lineHeight: 20,
   },
-  emptyCommentText: {
-    color: "#9d9d9d",
+  routeNameText: {
+    color: "#93c5fd",
+    marginTop: 8,
+    fontWeight: "700",
     fontSize: 12,
-    marginBottom: 8,
+  },
+  actionsRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    gap: 8,
+  },
+  actionBtn: {
+    flex: 1,
+    backgroundColor: "#facc15",
+    borderRadius: 10,
+    paddingVertical: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  actionBtnDisabled: {
+    opacity: 0.45,
+  },
+  actionBtnText: {
+    color: "#111827",
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  commentsToggleBtn: {
+    flex: 1,
+    backgroundColor: "#1f2937",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#374151",
+    paddingVertical: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  commentsToggleText: {
+    color: "#d1d5db",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  commentsBlock: {
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#1f2937",
+    paddingTop: 10,
+    gap: 8,
   },
   commentCard: {
-    backgroundColor: "#151515",
+    backgroundColor: "#111827",
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#2a2a2a",
-    borderRadius: 8,
+    borderColor: "#1f2937",
     padding: 8,
-    marginBottom: 6,
   },
   commentAuthor: {
     color: "#fff",
-    fontSize: 12,
     fontWeight: "700",
-    marginBottom: 2,
+    fontSize: 12,
   },
   commentText: {
-    color: "#ddd",
-    fontSize: 12,
+    color: "#d1d5db",
+    marginTop: 3,
+    fontSize: 13,
+  },
+  commentDate: {
+    color: "#6b7280",
+    marginTop: 4,
+    fontSize: 10,
   },
   commentInputRow: {
     flexDirection: "row",
-    alignItems: "center",
     gap: 8,
-    marginTop: 4,
   },
   commentInput: {
     flex: 1,
-    backgroundColor: "#151515",
+    backgroundColor: "#111827",
     borderWidth: 1,
-    borderColor: "#333",
-    borderRadius: 8,
+    borderColor: "#374151",
+    borderRadius: 10,
     color: "#fff",
     paddingHorizontal: 10,
-    paddingVertical: 8,
-    fontSize: 12,
+    paddingVertical: 9,
   },
-  commentButton: {
+  commentSendBtn: {
+    width: 40,
+    borderRadius: 10,
     backgroundColor: "#1e4db7",
-    borderRadius: 8,
-    width: 36,
-    height: 36,
+    alignItems: "center",
     justifyContent: "center",
+  },
+  emptyBlock: {
+    marginTop: 40,
+    backgroundColor: "#111827",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#1f2937",
+    padding: 16,
     alignItems: "center",
   },
-  emptyFeed: {
-    color: "#aaa",
+  emptyTitle: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 15,
+    marginBottom: 6,
     textAlign: "center",
-    marginTop: 30,
+  },
+  emptyText: {
+    color: "#9ca3af",
+    textAlign: "center",
+    lineHeight: 20,
   },
 });

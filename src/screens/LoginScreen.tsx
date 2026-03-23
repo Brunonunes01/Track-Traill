@@ -1,7 +1,8 @@
 import { Ionicons } from "@expo/vector-icons";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import React, { useState } from "react";
+import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Animated,
   Image,
   ImageBackground,
@@ -16,15 +17,86 @@ import {
 import { auth } from "../../services/connectionFirebase";
 import { ensureUserProfileCompatibility } from "../services/userService";
 
+const LOGIN_ATTEMPT_TIMEOUT_MS = 15000;
+
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string) => {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+  });
+};
+
 export default function LoginScreen({ navigation }: any) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const hasNavigatedRef = useRef(false);
 
   // 🔹 Controle da animação de foco
   const emailFocus = new Animated.Value(0);
   const passwordFocus = new Animated.Value(0);
+
+  const navigateToMain = useCallback(
+    (source: string) => {
+      if (hasNavigatedRef.current) {
+        console.log(`[auth] Skipping navigation from ${source} (already navigating/navigated)`);
+        return;
+      }
+      
+      hasNavigatedRef.current = true;
+      console.log(`[auth] Initiating navigation to MainTabs from source: ${source}`);
+      
+      const performNavigation = () => {
+        try {
+          if (typeof navigation?.replace === "function") {
+            console.log("[auth] Using navigation.replace('MainTabs')");
+            navigation.replace("MainTabs");
+            return;
+          }
+          if (typeof navigation?.navigate === "function") {
+            console.log("[auth] Using navigation.navigate('MainTabs')");
+            navigation.navigate("MainTabs");
+            return;
+          }
+          throw new Error("Navigation API indisponível no login.");
+        } catch (navError: any) {
+          hasNavigatedRef.current = false;
+          console.error("[auth] Navigation error captured in performNavigation:", navError);
+          setError("Falha ao abrir o painel principal. Tente novamente.");
+          Alert.alert("Erro de Navegação", "Não foi possível abrir a tela principal após o login.");
+        }
+      };
+
+      // Pequeno delay para garantir que o estado do Firebase está estável no Android
+      if (Platform.OS === "android") {
+        setTimeout(performNavigation, 300);
+      } else {
+        performNavigation();
+      }
+    },
+    [navigation]
+  );
+
+  useEffect(() => {
+    console.log("[auth] LoginScreen mounted");
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      console.log("[auth] Auth state observed on login screen:", user ? "authenticated" : "guest");
+      if (user) {
+        navigateToMain("auth-state-listener");
+      }
+    });
+    return unsubscribe;
+  }, [navigateToMain]);
 
   const handleFocus = (anim: Animated.Value) => {
     Animated.timing(anim, {
@@ -48,16 +120,42 @@ export default function LoginScreen({ navigation }: any) {
       return;
     }
 
+    if (isSubmitting) return;
+
+    console.log("[auth] Login started");
+    setIsSubmitting(true);
+    setError("");
+
     try {
-      const userCredential = await signInWithEmailAndPassword(auth, email, password);
-      await ensureUserProfileCompatibility({
-        uid: userCredential.user.uid,
-        email: userCredential.user.email || "",
-      });
+      const userCredential = await withTimeout(
+        signInWithEmailAndPassword(auth, email.trim(), password),
+        LOGIN_ATTEMPT_TIMEOUT_MS,
+        "Tempo de login excedido. Verifique sua conexão e tente novamente."
+      );
+      console.log("[auth] Login completed");
+      console.log("[auth] Authenticated user:", userCredential.user.uid);
+
+      console.log("[auth] Profile loading started");
+      try {
+        await ensureUserProfileCompatibility({
+          uid: userCredential.user.uid,
+          email: userCredential.user.email || "",
+        });
+        console.log("[auth] Profile loading finished");
+      } catch (profileError: any) {
+        console.error("[auth] Profile loading failed:", profileError);
+        Alert.alert(
+          "Perfil parcialmente indisponível",
+          "O login foi concluído, mas houve falha ao carregar seu perfil. Você ainda pode entrar no app."
+        );
+      }
+
       setError("");
       setEmail("");
       setPassword("");
+      navigateToMain("login-success");
     } catch (err: any) {
+      console.error("[auth] Login error captured:", err);
       if (err.code === "auth/user-not-found") {
         setError("Usuário não encontrado.");
         setEmail("");
@@ -68,9 +166,13 @@ export default function LoginScreen({ navigation }: any) {
       } else if (err.code === "auth/invalid-email") {
         setError("E-mail inválido.");
         setEmail("");
+      } else if (err?.message === "Tempo de login excedido. Verifique sua conexão e tente novamente.") {
+        setError(err.message);
       } else {
         setError("Erro ao fazer login.");
       }
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -182,9 +284,21 @@ export default function LoginScreen({ navigation }: any) {
               error === "Erro ao fazer login.") && (
               <Text style={styles.errorText}>{error}</Text>
             )}
+            {error &&
+              error !== "Usuário não encontrado." &&
+              error !== "E-mail inválido." &&
+              error !== "Senha incorreta." &&
+              error !== "Digite o e-mail e a senha." &&
+              error !== "Erro ao fazer login." && (
+                <Text style={styles.errorText}>{error}</Text>
+              )}
 
-            <TouchableOpacity style={styles.primaryButton} onPress={handleLogin}>
-              <Text style={styles.primaryButtonText}>ENTRAR</Text>
+            <TouchableOpacity
+              style={[styles.primaryButton, isSubmitting && { opacity: 0.75 }]}
+              onPress={handleLogin}
+              disabled={isSubmitting}
+            >
+              <Text style={styles.primaryButtonText}>{isSubmitting ? "ENTRANDO..." : "ENTRAR"}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity

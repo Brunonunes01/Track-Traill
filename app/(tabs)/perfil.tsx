@@ -1,6 +1,8 @@
 import React from "react";
-import ProfileBasicScreen from "../../src/screens/ProfileBasicScreen";
+import PerfilScreen from "../../src/screens/PerfilScreen";
+import { useExpoNavigationBridge } from "../../src/navigation/useExpoNavigationBridge";
 
 export default function PerfilTabRoute() {
-  return <ProfileBasicScreen />;
+  const navigation = useExpoNavigationBridge();
+  return <PerfilScreen navigation={navigation} />;
 }

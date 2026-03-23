@@ -23,27 +23,45 @@ const mapFriendshipsSnapshot = (snapshot) => {
   return Object.keys(data).map((id) => ({ id, ...data[id] }));
 };
 
-export const subscribeFriendships = (onChange) => {
-  return onValue(ref(database, FRIENDSHIPS_PATH), (snapshot) => {
-    onChange(mapFriendshipsSnapshot(snapshot));
-  });
+export const subscribeFriendships = (onChange, onError) => {
+  return onValue(
+    ref(database, FRIENDSHIPS_PATH),
+    (snapshot) => {
+      onChange(mapFriendshipsSnapshot(snapshot));
+    },
+    (error) => {
+      console.warn("[friends] subscribeFriendships failed:", error?.message || String(error));
+      if (typeof onError === "function") {
+        onError(error);
+      }
+    }
+  );
 };
 
-export const subscribeUsers = (onChange) => {
-  return onValue(ref(database, "users"), (snapshot) => {
-    if (!snapshot.exists()) {
-      onChange([]);
-      return;
-    }
+export const subscribeUsers = (onChange, onError) => {
+  return onValue(
+    ref(database, "users"),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onChange([]);
+        return;
+      }
 
-    const data = snapshot.val();
-    const users = Object.keys(data).map((uid) => ({
-      uid,
-      ...data[uid],
-      username: data[uid]?.username || `user_${uid.slice(0, 6)}`,
-    }));
-    onChange(users);
-  });
+      const data = snapshot.val();
+      const users = Object.keys(data).map((uid) => ({
+        uid,
+        ...data[uid],
+        username: data[uid]?.username || `user_${uid.slice(0, 6)}`,
+      }));
+      onChange(users);
+    },
+    (error) => {
+      console.warn("[friends] subscribeUsers failed:", error?.message || String(error));
+      if (typeof onError === "function") {
+        onError(error);
+      }
+    }
+  );
 };
 
 export const sendFriendRequest = async ({ senderId, receiverId }) => {

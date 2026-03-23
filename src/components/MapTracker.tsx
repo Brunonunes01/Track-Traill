@@ -2,6 +2,8 @@ import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
 import { Alert, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from '../utils/geo';
 
 interface MapTrackerProps {
   onFinish: (data: { coordinates: any[]; distance: number; duration: number }) => void;
@@ -9,11 +11,14 @@ interface MapTrackerProps {
 }
 
 export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
-  const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
-  const [currentLocation, setCurrentLocation] = useState<any>(null);
+  const insets = useSafeAreaInsets();
+  const [routeCoordinates, setRouteCoordinates] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [currentLocation, setCurrentLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [distance, setDistance] = useState(0);
   const [seconds, setSeconds] = useState(0);
+  const [mapError, setMapError] = useState<string | null>(null);
   const mapRef = useRef<MapView>(null);
+  const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
 
   // Timer
   useEffect(() => {
@@ -25,51 +30,82 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
 
   // Solicitar Permissão e Iniciar Rastreamento
   useEffect(() => {
+    let mounted = true;
+
     (async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
-      
-      if (status !== 'granted') {
-        Alert.alert('Permissão negada', 'Precisamos do GPS para rastrear sua trilha.');
-        return;
-      }
+      try {
+        console.log("[map-tracker] Checking foreground permissions");
+        const { status } = await Location.requestForegroundPermissionsAsync();
 
-      // Pega posição inicial
-      let location = await Location.getCurrentPositionAsync({});
-      setCurrentLocation(location.coords);
-
-      // Inicia monitoramento
-      await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          timeInterval: 2000, // Atualiza a cada 2s
-          distanceInterval: 5, // Ou a cada 5 metros
-        },
-        (loc) => {
-          const { latitude, longitude } = loc.coords;
-          const newCoordinate = { latitude, longitude };
-
-          setRouteCoordinates((prevRoute) => {
-            const newRoute = [...prevRoute, newCoordinate];
-            
-            // Calcula distância simples (acumulativa)
-            if (prevRoute.length > 0) {
-              const lastPoint = prevRoute[prevRoute.length - 1];
-              const dist = calcDistance(
-                lastPoint.latitude, lastPoint.longitude,
-                latitude, longitude
-              );
-              setDistance((d) => d + dist);
-            }
-            return newRoute;
-          });
-
-          setCurrentLocation(loc.coords);
-          
-          // Centraliza mapa na nova posição
-          mapRef.current?.animateCamera({ center: newCoordinate, zoom: 17 });
+        if (status !== 'granted') {
+          console.warn("[map-tracker] GPS permission denied");
+          setMapError('Permissão de localização negada.');
+          Alert.alert('Permissão negada', 'Precisamos do GPS para rastrear sua trilha.');
+          return;
         }
-      );
+
+        console.log("[map-tracker] Getting current position for map init");
+        const location = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.Balanced,
+        });
+        
+        if (!mounted) return;
+        
+        const safeInitial = toCoordinate(location.coords);
+        if (!safeInitial) {
+          console.error("[map-tracker] Invalid initial coordinates received:", location.coords);
+          setMapError('Coordenadas iniciais inválidas.');
+          return;
+        }
+
+        console.log("[map-tracker] Map starting at:", safeInitial);
+        setCurrentLocation(safeInitial);
+        setMapError(null);
+
+        locationSubscriptionRef.current = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.High,
+            timeInterval: 2000,
+            distanceInterval: 5,
+          },
+          (loc) => {
+            if (!mounted) return;
+            const newCoordinate = toCoordinate(loc.coords);
+            if (!newCoordinate) return;
+
+            console.log("[map-tracker] GPS update received");
+            setRouteCoordinates((prevRoute) => {
+              const newRoute = [...prevRoute, newCoordinate];
+              if (prevRoute.length > 0) {
+                const lastPoint = prevRoute[prevRoute.length - 1];
+                const dist = calcDistance(
+                  lastPoint.latitude,
+                  lastPoint.longitude,
+                  newCoordinate.latitude,
+                  newCoordinate.longitude
+                );
+                setDistance((d) => d + dist);
+              }
+              return newRoute;
+            });
+
+            setCurrentLocation(newCoordinate);
+            mapRef.current?.animateCamera({ center: newCoordinate, zoom: 17 });
+          }
+        );
+      } catch (error: any) {
+        if (!mounted) return;
+        console.error("[map-tracker] Initialization error:", error?.message || String(error));
+        setMapError('Falha ao iniciar GPS em tempo real.');
+        Alert.alert('Erro de localização', 'Não foi possível iniciar o rastreamento por GPS.');
+      }
     })();
+
+    return () => {
+      mounted = false;
+      locationSubscriptionRef.current?.remove();
+      locationSubscriptionRef.current = null;
+    };
   }, []);
 
   // Função auxiliar de distância (Haversine simples)
@@ -93,27 +129,28 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
   };
 
   const handleFinish = () => {
+    const safeCoordinates = toCoordinateArray(routeCoordinates);
     // Retorna os dados para a tela pai
     onFinish({
-      coordinates: routeCoordinates,
+      coordinates: safeCoordinates,
       distance: parseFloat(distance.toFixed(2)),
       duration: Math.floor(seconds / 60) // em minutos
     });
   };
 
+  const initialRegion = getRegionWithFallback(currentLocation, FALLBACK_REGION, {
+    latitudeDelta: 0.005,
+    longitudeDelta: 0.005,
+  });
+
   return (
     <View style={styles.container}>
-      {currentLocation && (
+      {currentLocation ? (
         <MapView
           ref={mapRef}
           style={styles.map}
           provider={PROVIDER_DEFAULT}
-          initialRegion={{
-            latitude: currentLocation.latitude,
-            longitude: currentLocation.longitude,
-            latitudeDelta: 0.005,
-            longitudeDelta: 0.005,
-          }}
+          initialRegion={initialRegion}
           showsUserLocation={true}
         >
           <Polyline
@@ -125,10 +162,17 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
             <Marker coordinate={routeCoordinates[0]} title="Início" pinColor="green" />
           )}
         </MapView>
+      ) : (
+        <View style={styles.mapFallback}>
+          <Text style={styles.mapFallbackTitle}>Aguardando localização</Text>
+          <Text style={styles.mapFallbackText}>
+            {mapError || 'Ative o GPS para iniciar o rastreamento com segurança.'}
+          </Text>
+        </View>
       )}
 
       {/* Overlay de Informações */}
-      <View style={styles.overlay}>
+      <View style={[styles.overlay, { bottom: Math.max(insets.bottom + 12, 24) }]}>
         <View style={styles.statsContainer}>
           <View style={styles.statItem}>
             <Text style={styles.statLabel}>Tempo</Text>
@@ -164,7 +208,6 @@ const styles = StyleSheet.create({
   },
   overlay: {
     position: 'absolute',
-    bottom: 40,
     left: 20,
     right: 20,
     backgroundColor: 'rgba(0,0,0,0.8)',
@@ -172,6 +215,23 @@ const styles = StyleSheet.create({
     padding: 20,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.2)',
+  },
+  mapFallback: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+  },
+  mapFallbackTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  mapFallbackText: {
+    marginTop: 8,
+    color: '#cbd5e1',
+    textAlign: 'center',
+    fontSize: 14,
   },
   statsContainer: {
     flexDirection: 'row',

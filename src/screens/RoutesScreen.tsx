@@ -18,6 +18,10 @@ import { colors, layout, spacing } from "../theme/designSystem";
 type RouteWithDistance = TrackTrailRoute & { distanceFromUserKm?: number };
 
 type DistanceFilter = "Todas" | 5 | 20 | 50;
+const TEST_ROUTE_TYPE = "teste";
+
+const normalizeRouteType = (value?: string) => (value || "").trim().toLowerCase();
+const isTestRouteType = (value?: string) => normalizeRouteType(value) === TEST_ROUTE_TYPE;
 
 export default function RoutesScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
@@ -96,7 +100,13 @@ export default function RoutesScreen({ navigation }: any) {
   }, [alerts]);
 
   const routeTypes = useMemo(() => {
-    const types = Array.from(new Set(routes.map((route) => route.tipo).filter(Boolean)));
+    const types = Array.from(
+      new Set(
+        routes
+          .map((route) => route.tipo)
+          .filter((value): value is string => Boolean(value && !isTestRouteType(value)))
+      )
+    );
     return ["Todos", ...types];
   }, [routes]);
 
@@ -105,8 +115,8 @@ export default function RoutesScreen({ navigation }: any) {
       return [...routes].sort((a, b) => a.titulo.localeCompare(b.titulo));
     }
 
-    const withDistance = routes.map((route) => {
-      if (!route.startPoint) return route;
+    const withDistance = routes.map<RouteWithDistance>((route) => {
+      if (!route.startPoint) return { ...route };
 
       const distanceFromUserKm = calculateDistanceKm(
         userLocation.coords.latitude,
@@ -127,8 +137,12 @@ export default function RoutesScreen({ navigation }: any) {
 
   const visibleRoutes = useMemo(() => {
     return routesWithDistance.filter((route) => {
+      if (isTestRouteType(route.tipo)) return false;
+
+      const normalizedSelectedType = normalizeRouteType(selectedType);
+      const normalizedRouteType = normalizeRouteType(route.tipo);
       const matchesType =
-        selectedType === "Todos" || route.tipo.toLowerCase().includes(selectedType.toLowerCase());
+        selectedType === "Todos" || normalizedRouteType.includes(normalizedSelectedType);
 
       if (!matchesType) return false;
       if (distanceFilter === "Todas") return true;

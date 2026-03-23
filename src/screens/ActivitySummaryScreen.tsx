@@ -12,9 +12,11 @@ import {
   View,
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ActivityType,
   ActiveActivitySession,
+  saveFinishedSessionAsActivity,
   discardActiveSession,
   formatDuration,
   getActiveSession,
@@ -22,6 +24,8 @@ import {
   getSessionDurationSeconds,
   saveFinishedSessionAsRoute,
 } from "../services/activityTrackingService";
+import { createActivitySharePost } from "../../services/communityService";
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinateArray } from "../utils/geo";
 
 const ACTIVITY_OPTIONS: { label: string; value: ActivityType }[] = [
   { label: "Bike", value: "bike" },
@@ -33,16 +37,26 @@ const ACTIVITY_OPTIONS: { label: string; value: ActivityType }[] = [
 const getActivityLabel = (value: ActivityType) =>
   ACTIVITY_OPTIONS.find((item) => item.value === value)?.label || value;
 
-export default function ActivitySummaryScreen() {
-  const navigation = useNavigation<any>();
-  const route = useRoute<any>();
+type ActivitySummaryScreenProps = {
+  navigation?: any;
+  route?: any;
+};
+
+export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const hookRoute = useRoute<any>();
+  const navigation = props.navigation || hookNavigation;
+  const route = props.route || hookRoute;
+  const insets = useSafeAreaInsets();
   const sessionFromParams = route.params?.session as ActiveActivitySession | undefined;
 
   const [session, setSession] = useState<ActiveActivitySession | null>(sessionFromParams || null);
   const [loading, setLoading] = useState(!sessionFromParams);
   const [saving, setSaving] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [routeName, setRouteName] = useState("");
   const [description, setDescription] = useState("");
+  const [caption, setCaption] = useState("");
   const [activityType, setActivityType] = useState<ActivityType>(
     sessionFromParams?.activityType || "trilha"
   );
@@ -55,14 +69,21 @@ export default function ActivitySummaryScreen() {
 
     let mounted = true;
     const loadSession = async () => {
-      const active = await getActiveSession();
-      if (!mounted) return;
+      try {
+        const active = await getActiveSession();
+        if (!mounted) return;
 
-      setSession(active);
-      if (active) {
-        setActivityType(active.activityType);
+        setSession(active);
+        if (active) {
+          setActivityType(active.activityType);
+        }
+      } catch (error: any) {
+        console.warn("[activity-summary] loadSession failed:", error?.message || String(error));
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
       }
-      setLoading(false);
     };
 
     loadSession();
@@ -76,36 +97,26 @@ export default function ActivitySummaryScreen() {
   const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
 
   const mapPoints = useMemo(
-    () =>
-      (session?.points || []).map((point) => ({
-        latitude: point.latitude,
-        longitude: point.longitude,
-      })),
+    () => toCoordinateArray(session?.points || []),
     [session]
   );
 
   const initialRegion = useMemo(() => {
     const firstPoint = mapPoints[0];
-    if (!firstPoint) {
-      return {
-        latitude: -15.7942,
-        longitude: -47.8822,
-        latitudeDelta: 0.1,
-        longitudeDelta: 0.1,
-      };
-    }
-
-    return {
-      latitude: firstPoint.latitude,
-      longitude: firstPoint.longitude,
+    return getRegionWithFallback(firstPoint, FALLBACK_REGION, {
       latitudeDelta: 0.02,
       longitudeDelta: 0.02,
-    };
+    });
   }, [mapPoints]);
 
   const handleDiscard = async () => {
-    await discardActiveSession();
-    navigation.navigate("MainTabs", { screen: "Home" });
+    try {
+      await discardActiveSession();
+      navigation.navigate("MainTabs", { screen: "Home" });
+    } catch (error: any) {
+      console.warn("[activity-summary] handleDiscard failed:", error?.message || String(error));
+      Alert.alert("Erro", "Não foi possível descartar a atividade agora.");
+    }
   };
 
   const handleSaveRoute = async () => {
@@ -133,6 +144,80 @@ export default function ActivitySummaryScreen() {
       Alert.alert("Não foi possível salvar", error?.message || "Tente novamente.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleShareOnly = async () => {
+    if (!session) {
+      Alert.alert("Erro", "Nenhuma atividade finalizada encontrada.");
+      return;
+    }
+
+    try {
+      setSharing(true);
+
+      const savedActivity = await saveFinishedSessionAsActivity(session, activityType);
+      await createActivitySharePost({
+        userId: session.userId,
+        session,
+        activityId: savedActivity.activityId,
+        routeId: null,
+        routeName: routeName.trim() || null,
+        caption,
+        activityType,
+      });
+
+      await discardActiveSession();
+      Alert.alert("Compartilhado", "Sua atividade foi compartilhada com seus amigos.");
+      navigation.navigate("Ajuda");
+    } catch (error: any) {
+      Alert.alert("Não foi possível compartilhar", error?.message || "Tente novamente.");
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const handleSaveAndShare = async () => {
+    if (!session) {
+      Alert.alert("Erro", "Nenhuma atividade finalizada encontrada.");
+      return;
+    }
+
+    if (!routeName.trim()) {
+      Alert.alert("Nome da rota obrigatório", "Informe um nome para salvar e compartilhar.");
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setSharing(true);
+
+      const savedRoute = await saveFinishedSessionAsRoute(session, {
+        routeName,
+        description,
+        activityType,
+      });
+
+      await createActivitySharePost({
+        userId: session.userId,
+        session,
+        activityId: savedRoute.activityId,
+        routeId: savedRoute.routeId,
+        routeName: routeName.trim(),
+        caption,
+        activityType,
+      });
+
+      Alert.alert(
+        "Rota salva e compartilhada",
+        "Sua atividade já está no feed dos amigos com acesso à rota."
+      );
+      navigation.navigate("Ajuda");
+    } catch (error: any) {
+      Alert.alert("Não foi possível concluir", error?.message || "Tente novamente.");
+    } finally {
+      setSaving(false);
+      setSharing(false);
     }
   };
 
@@ -181,7 +266,7 @@ export default function ActivitySummaryScreen() {
           ) : null}
         </MapView>
 
-        <TouchableOpacity style={styles.backBtn} onPress={() => navigation.goBack()}>
+        <TouchableOpacity style={[styles.backBtn, { top: insets.top + 8 }]} onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
       </View>
@@ -246,13 +331,24 @@ export default function ActivitySummaryScreen() {
           placeholderTextColor="#6b7280"
         />
 
+        <Text style={styles.label}>Legenda para compartilhar (opcional)</Text>
+        <TextInput
+          style={[styles.input, styles.inputMultiline]}
+          value={caption}
+          onChangeText={setCaption}
+          multiline
+          textAlignVertical="top"
+          placeholder="Ex: Trilha incrível hoje cedo, trecho final com subida forte."
+          placeholderTextColor="#6b7280"
+        />
+
         <View style={styles.infoBox}>
           <Text style={styles.infoText}>Tipo original: {getActivityLabel(session.activityType)}</Text>
           <Text style={styles.infoText}>Pontos GPS: {session.points.length}</Text>
           <Text style={styles.infoText}>Status: {session.status}</Text>
         </View>
 
-        <TouchableOpacity style={styles.primaryBtn} onPress={handleSaveRoute} disabled={saving}>
+        <TouchableOpacity style={styles.primaryBtn} onPress={handleSaveRoute} disabled={saving || sharing}>
           {saving ? (
             <ActivityIndicator size="small" color="#000" />
           ) : (
@@ -263,7 +359,29 @@ export default function ActivitySummaryScreen() {
           )}
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.secondaryBtn} onPress={handleDiscard} disabled={saving}>
+        <TouchableOpacity style={styles.infoBtn} onPress={handleShareOnly} disabled={saving || sharing}>
+          {sharing && !saving ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <Ionicons name="share-social-outline" size={18} color="#fff" />
+              <Text style={styles.infoBtnText}>Compartilhar com amigos</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.successBtn} onPress={handleSaveAndShare} disabled={saving || sharing}>
+          {saving && sharing ? (
+            <ActivityIndicator size="small" color="#000" />
+          ) : (
+            <>
+              <Ionicons name="checkmark-done-outline" size={18} color="#000" />
+              <Text style={styles.successBtnText}>Salvar e compartilhar</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.secondaryBtn} onPress={handleDiscard} disabled={saving || sharing}>
           <Ionicons name="trash-outline" size={18} color="#d1d5db" />
           <Text style={styles.secondaryBtnText}>Descartar atividade</Text>
         </TouchableOpacity>
@@ -395,6 +513,34 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   primaryBtnText: {
+    color: "#000",
+    fontWeight: "800",
+  },
+  infoBtn: {
+    marginTop: 10,
+    backgroundColor: "#1e4db7",
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  infoBtnText: {
+    color: "#fff",
+    fontWeight: "700",
+  },
+  successBtn: {
+    marginTop: 10,
+    backgroundColor: "#22c55e",
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+  },
+  successBtnText: {
     color: "#000",
     fontWeight: "800",
   },

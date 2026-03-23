@@ -12,19 +12,29 @@ import {
   View,
 } from "react-native";
 import MapView, { Marker, PROVIDER_DEFAULT } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
 import AlertCard from "../components/AlertCard";
 import { ALERT_TYPE_META, TrailAlert } from "../models/alerts";
 import { confirmAlert, markAlertAsResolved, subscribeAlerts } from "../services/alertService";
+import { toCoordinate } from "../utils/geo";
 
 type AlertDetailParams = {
   alertId?: string;
   alertData?: TrailAlert;
 };
 
-export default function AlertDetailScreen() {
-  const navigation = useNavigation<any>();
-  const { params } = useRoute<any>();
+type AlertDetailScreenProps = {
+  navigation?: any;
+  route?: any;
+};
+
+export default function AlertDetailScreen(props: AlertDetailScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const hookRoute = useRoute<any>();
+  const navigation = props.navigation || hookNavigation;
+  const insets = useSafeAreaInsets();
+  const params = props.route?.params || hookRoute.params;
   const { alertId, alertData } = (params || {}) as AlertDetailParams;
 
   const [alertItem, setAlertItem] = useState<TrailAlert | null>(alertData || null);
@@ -105,27 +115,37 @@ export default function AlertDetailScreen() {
     );
   }
 
-  const meta = ALERT_TYPE_META[alertItem.type];
+  const meta = ALERT_TYPE_META[alertItem.type] || ALERT_TYPE_META.outro;
+  const markerCoordinate = toCoordinate({
+    latitude: alertItem.latitude,
+    longitude: alertItem.longitude,
+  });
 
   return (
     <View style={styles.container}>
       <View style={styles.mapWrap}>
-        <MapView
-          style={StyleSheet.absoluteFillObject}
-          provider={PROVIDER_DEFAULT}
-          initialRegion={{
-            latitude: alertItem.latitude,
-            longitude: alertItem.longitude,
-            latitudeDelta: 0.01,
-            longitudeDelta: 0.01,
-          }}
-        >
-          <Marker coordinate={{ latitude: alertItem.latitude, longitude: alertItem.longitude }}>
-            <Ionicons name={meta.icon as any} size={32} color={meta.color} />
-          </Marker>
-        </MapView>
+        {markerCoordinate ? (
+          <MapView
+            style={StyleSheet.absoluteFillObject}
+            provider={PROVIDER_DEFAULT}
+            initialRegion={{
+              latitude: markerCoordinate.latitude,
+              longitude: markerCoordinate.longitude,
+              latitudeDelta: 0.01,
+              longitudeDelta: 0.01,
+            }}
+          >
+            <Marker coordinate={markerCoordinate}>
+              <Ionicons name={meta.icon as any} size={32} color={meta.color} />
+            </Marker>
+          </MapView>
+        ) : (
+          <View style={styles.invalidMapWrap}>
+            <Text style={styles.invalidMapText}>Localização inválida para este alerta.</Text>
+          </View>
+        )}
 
-        <TouchableOpacity style={styles.backIcon} onPress={() => navigation.goBack()}>
+        <TouchableOpacity style={[styles.backIcon, { top: insets.top + 8 }]} onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
       </View>
@@ -142,7 +162,7 @@ export default function AlertDetailScreen() {
             Autor: {alertItem.userDisplayName || alertItem.userEmail || "Usuário"}
           </Text>
           <Text style={styles.metaText}>
-            Coordenadas: {alertItem.latitude.toFixed(5)}, {alertItem.longitude.toFixed(5)}
+            Coordenadas: {markerCoordinate ? `${markerCoordinate.latitude.toFixed(5)}, ${markerCoordinate.longitude.toFixed(5)}` : "indisponíveis"}
           </Text>
         </View>
 
@@ -185,6 +205,15 @@ const styles = StyleSheet.create({
   mapWrap: {
     height: "35%",
     position: "relative",
+  },
+  invalidMapWrap: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#111827",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  invalidMapText: {
+    color: "#d1d5db",
   },
   backIcon: {
     position: "absolute",

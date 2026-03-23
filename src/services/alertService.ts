@@ -12,7 +12,7 @@ import {
   update,
 } from "firebase/database";
 import { User } from "firebase/auth";
-import { database } from "../../services/connectionFirebase";
+import { database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import { AlertStatus, AlertType, TrailAlert } from "../models/alerts";
 import { calculateDistanceKm } from "./routeService";
 
@@ -136,7 +136,7 @@ export const subscribeAlerts = (
       onChange(alerts);
     },
     (error) => {
-      onError?.(error.message || "Falha ao carregar alertas.");
+      onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar alertas."));
     }
   );
 
@@ -165,57 +165,79 @@ export const createAlert = async (input: CreateAlertInput, user: User | null) =>
     throw new Error("Latitude e longitude são obrigatórias.");
   }
 
-  const duplicate = await hasRecentDuplicate(user.uid, input);
-  if (duplicate) {
-    throw new Error(
-      "Já existe um alerta muito parecido criado recentemente. Aguarde alguns minutos."
-    );
+  try {
+    const duplicate = await hasRecentDuplicate(user.uid, input);
+    if (duplicate) {
+      throw new Error(
+        "Já existe um alerta muito parecido criado recentemente. Aguarde alguns minutos."
+      );
+    }
+
+    const createdAt = new Date().toISOString();
+    const createdAtMs = Date.now();
+
+    const alertPayload = {
+      type: input.type,
+      description: input.description.trim(),
+      latitude: input.latitude,
+      longitude: input.longitude,
+      routeId: input.routeId || null,
+      routeName: input.routeName || null,
+      createdAt,
+      createdAtMs,
+      userId: user.uid,
+      userDisplayName: user.displayName || null,
+      userEmail: user.email || null,
+      status: input.status || "ativo",
+      photoUrl: input.photoUrl || null,
+      confirmations: 0,
+    };
+
+    const newAlertRef = push(alertsRef);
+    await set(newAlertRef, alertPayload);
+
+    return {
+      id: newAlertRef.key,
+      ...alertPayload,
+    };
+  } catch (error: any) {
+    const message = normalizeFirebaseErrorMessage(error, "Não foi possível registrar o alerta.");
+    console.warn("[alerts] createAlert failed:", message);
+    throw new Error(message);
   }
-
-  const createdAt = new Date().toISOString();
-  const createdAtMs = Date.now();
-
-  const alertPayload = {
-    type: input.type,
-    description: input.description.trim(),
-    latitude: input.latitude,
-    longitude: input.longitude,
-    routeId: input.routeId || null,
-    routeName: input.routeName || null,
-    createdAt,
-    createdAtMs,
-    userId: user.uid,
-    userDisplayName: user.displayName || null,
-    userEmail: user.email || null,
-    status: input.status || "ativo",
-    photoUrl: input.photoUrl || null,
-    confirmations: 0,
-  };
-
-  const newAlertRef = push(alertsRef);
-  await set(newAlertRef, alertPayload);
-
-  return {
-    id: newAlertRef.key,
-    ...alertPayload,
-  };
 };
 
 export const confirmAlert = async (alertId: string) => {
   const confirmationsRef = ref(database, `alerts/${alertId}/confirmations`);
 
-  await runTransaction(confirmationsRef, (current) => {
-    const value = typeof current === "number" ? current : 0;
-    return value + 1;
-  });
+  try {
+    await runTransaction(confirmationsRef, (current) => {
+      const value = typeof current === "number" ? current : 0;
+      return value + 1;
+    });
+  } catch (error) {
+    throw new Error(normalizeFirebaseErrorMessage(error, "Não foi possível confirmar o alerta."));
+  }
 };
 
 export const markAlertAsResolved = async (alertId: string) => {
   const alertRef = ref(database, `alerts/${alertId}`);
-  await update(alertRef, { status: "resolvido" });
+  try {
+    await update(alertRef, { status: "resolvido" });
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível atualizar o status do alerta.")
+    );
+  }
 };
 
 export const updateAlertStatus = async (alertId: string, status: AlertStatus) => {
   const alertRef = ref(database, `alerts/${alertId}`);
-  await update(alertRef, { status });
+  try {
+    await update(alertRef, { status });
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível atualizar o status do alerta.")
+    );
+  }
 };

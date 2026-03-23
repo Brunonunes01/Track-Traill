@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useNavigation } from "@react-navigation/native";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useEffect, useMemo, useState } from "react";
 import {
@@ -51,7 +52,13 @@ const sortByCreatedAtDesc = (a: Friendship, b: Friendship) => {
   return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
 };
 
-export default function FriendsScreen() {
+type FriendsScreenProps = {
+  navigation?: any;
+};
+
+export default function FriendsScreen(props: FriendsScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const navigation = props.navigation || hookNavigation;
   const [uid, setUid] = useState("");
   const [loading, setLoading] = useState(true);
   const [savingRequestId, setSavingRequestId] = useState<string | null>(null);
@@ -67,6 +74,16 @@ export default function FriendsScreen() {
         ensureUserProfileCompatibility({
           uid: user.uid,
           email: user.email || "",
+        }).catch((error: any) => {
+          console.error("[username-flow] ensure-profile:failure", {
+            screen: "FriendsScreen",
+            uid: user.uid,
+            reason: error?.message || String(error),
+          });
+          Alert.alert(
+            "Aviso",
+            "Não foi possível sincronizar seu username agora. Você pode continuar usando o app."
+          );
         });
       }
       setLoading(false);
@@ -76,13 +93,23 @@ export default function FriendsScreen() {
   }, []);
 
   useEffect(() => {
-    const unsubscribeUsers = subscribeUsers((list: AppUser[]) => {
-      setUsers(list);
-    });
+    const unsubscribeUsers = subscribeUsers(
+      (list: AppUser[]) => {
+        setUsers(list);
+      },
+      (error: any) => {
+        console.warn("[friends] users subscription error:", error?.message || String(error));
+      }
+    );
 
-    const unsubscribeFriendships = subscribeFriendships((list: Friendship[]) => {
-      setFriendships(list);
-    });
+    const unsubscribeFriendships = subscribeFriendships(
+      (list: Friendship[]) => {
+        setFriendships(list);
+      },
+      (error: any) => {
+        console.warn("[friends] friendships subscription error:", error?.message || String(error));
+      }
+    );
 
     return () => {
       unsubscribeUsers();
@@ -196,6 +223,14 @@ export default function FriendsScreen() {
     <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
       <View style={styles.overlay}>
         <ScrollView contentContainerStyle={styles.content}>
+          <TouchableOpacity
+            style={styles.feedButton}
+            onPress={() => navigation.navigate("Ajuda")}
+          >
+            <Ionicons name="people-circle-outline" size={18} color="#d1d5db" />
+            <Text style={styles.feedButtonText}>Abrir feed dos amigos</Text>
+          </TouchableOpacity>
+
           <Text style={styles.sectionTitle}>Buscar usuários</Text>
           <View style={styles.searchCard}>
             <TextInput
@@ -347,6 +382,22 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     paddingBottom: 30,
+  },
+  feedButton: {
+    backgroundColor: "#111827",
+    borderWidth: 1,
+    borderColor: "#374151",
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  feedButtonText: {
+    color: "#d1d5db",
+    fontWeight: "700",
   },
   sectionTitle: {
     color: "#fff",

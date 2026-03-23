@@ -6,7 +6,7 @@ import {
   initializeAuth,
   setPersistence,
 } from "firebase/auth";
-import { getDatabase } from "firebase/database";
+import { getDatabase, onValue, ref } from "firebase/database";
 import { Platform } from "react-native";
 
 const firebaseConfig = {
@@ -23,9 +23,11 @@ const app = initializeApp(firebaseConfig);
 
 const getReactNativePersistenceSafe = () => {
   try {
+    // Tenta obter a persistência do módulo auth
     const authModule = require("firebase/auth");
-    return authModule.getReactNativePersistence;
-  } catch {
+    return authModule.getReactNativePersistence || null;
+  } catch (err) {
+    console.warn("[firebase] getReactNativePersistence fallback error:", err);
     return null;
   }
 };
@@ -33,27 +35,73 @@ const getReactNativePersistenceSafe = () => {
 const createAuth = () => {
   if (Platform.OS === "web") {
     const webAuth = getAuth(app);
-    setPersistence(webAuth, browserLocalPersistence).catch(() => {
-      // Em alguns ambientes web essa chamada pode falhar silenciosamente.
+    setPersistence(webAuth, browserLocalPersistence).catch((err) => {
+      console.warn("[firebase] web persistence failed:", err);
     });
     return webAuth;
   }
 
   try {
     const persistenceFactory = getReactNativePersistenceSafe();
-    if (!persistenceFactory) {
-      return getAuth(app);
+    if (persistenceFactory && AsyncStorage) {
+      console.log("[firebase] Initializing Auth with AsyncStorage persistence");
+      return initializeAuth(app, {
+        persistence: persistenceFactory(AsyncStorage),
+      });
     }
-
-    return initializeAuth(app, {
-      persistence: persistenceFactory(AsyncStorage),
-    });
-  } catch {
+    console.log("[firebase] Falling back to default getAuth");
+    return getAuth(app);
+  } catch (error) {
+    console.warn("[firebase] Auth initialization error, using getAuth:", error);
     return getAuth(app);
   }
 };
 
 export const auth = createAuth();
 export const database = getDatabase(app);
+
+const isDisconnectLikeError = (error: unknown) => {
+  const message = String((error as any)?.message || "").toLowerCase();
+  const code = String((error as any)?.code || "").toLowerCase();
+  return (
+    message.includes("disconnect") ||
+    message.includes("network") ||
+    message.includes("timeout") ||
+    code.includes("disconnect") ||
+    code.includes("network")
+  );
+};
+
+export const normalizeFirebaseErrorMessage = (
+  error: unknown,
+  fallback = "Erro de comunicação com o servidor."
+) => {
+  if (isDisconnectLikeError(error)) {
+    return "Sem conexão com o servidor. Verifique sua internet e tente novamente.";
+  }
+
+  const message = String((error as any)?.message || "").trim();
+  return message || fallback;
+};
+
+if (Platform.OS !== "web") {
+  try {
+    onValue(
+      ref(database, ".info/connected"),
+      (snapshot) => {
+        const connected = snapshot.val() === true;
+        console.log(`[firebase] realtime connection: ${connected ? "online" : "offline"}`);
+      },
+      (error) => {
+        console.warn(
+          "[firebase] .info/connected listener failed:",
+          normalizeFirebaseErrorMessage(error)
+        );
+      }
+    );
+  } catch (error) {
+    console.warn("[firebase] failed to register connection listener:", String(error));
+  }
+}
 
 export default app;

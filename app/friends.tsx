@@ -1,8 +1,8 @@
 import React from "react";
-import CommunityScreen from "../src/screens/CommunityScreen";
+import FriendsScreen from "../src/screens/FriendsScreen";
 import { useExpoNavigationBridge } from "../src/navigation/useExpoNavigationBridge";
 
-export default function AjudaRoute() {
+export default function FriendsRoute() {
   const navigation = useExpoNavigationBridge();
-  return <CommunityScreen navigation={navigation} />;
+  return <FriendsScreen navigation={navigation} />;
 }

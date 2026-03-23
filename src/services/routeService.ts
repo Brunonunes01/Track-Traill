@@ -1,5 +1,5 @@
 import { onValue, ref } from "firebase/database";
-import { database } from "../../services/connectionFirebase";
+import { database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import { TrackTrailRoute } from "../models/alerts";
 
 const toNumber = (value: unknown): number | null => {
@@ -66,7 +66,7 @@ export const subscribeOfficialRoutes = (
       onChange(routes);
     },
     (error) => {
-      onError?.(error.message || "Falha ao carregar rotas.");
+      onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar rotas."));
     }
   );
 };

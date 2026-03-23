@@ -17,9 +17,11 @@ import {
   View,
 } from "react-native";
 import MapView, { Marker, PROVIDER_DEFAULT } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
 import { ALERT_TYPE_META, ALERT_TYPES, AlertStatus, AlertType } from "../models/alerts";
 import { createAlert } from "../services/alertService";
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinate } from "../utils/geo";
 
 type AlertFormParams = {
   routeId?: string;
@@ -28,53 +30,63 @@ type AlertFormParams = {
   longitude?: number;
 };
 
-const DEFAULT_REGION = {
-  latitude: -15.7942,
-  longitude: -47.8822,
-  latitudeDelta: 0.05,
-  longitudeDelta: 0.05,
+type AlertFormScreenProps = {
+  navigation?: any;
+  route?: any;
 };
 
-export default function AlertFormScreen() {
-  const navigation = useNavigation<any>();
-  const { params } = useRoute<any>();
+export default function AlertFormScreen(props: AlertFormScreenProps) {
+  const hookNavigation = useNavigation<any>();
+  const hookRoute = useRoute<any>();
+  const navigation = props.navigation || hookNavigation;
+  const params = props.route?.params || hookRoute.params;
   const initialParams = (params || {}) as AlertFormParams;
+  const insets = useSafeAreaInsets();
+  const safeInitialPoint = toCoordinate({
+    latitude: initialParams.latitude,
+    longitude: initialParams.longitude,
+  });
 
   const [type, setType] = useState<AlertType>("acidente");
   const [description, setDescription] = useState("");
   const [status, setStatus] = useState<AlertStatus>("ativo");
-  const [latitude, setLatitude] = useState<number | null>(initialParams.latitude ?? null);
-  const [longitude, setLongitude] = useState<number | null>(initialParams.longitude ?? null);
+  const [latitude, setLatitude] = useState<number | null>(safeInitialPoint?.latitude ?? null);
+  const [longitude, setLongitude] = useState<number | null>(safeInitialPoint?.longitude ?? null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [loadingLocation, setLoadingLocation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const mapRegion = useMemo(() => {
-    if (latitude !== null && longitude !== null) {
-      return {
-        latitude,
-        longitude,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
-      };
-    }
-
-    return DEFAULT_REGION;
-  }, [latitude, longitude]);
+  const mapRegion = useMemo(
+    () =>
+      getRegionWithFallback(
+        { latitude, longitude },
+        FALLBACK_REGION,
+        { latitudeDelta: 0.01, longitudeDelta: 0.01 }
+      ),
+    [latitude, longitude]
+  );
 
   const requestCurrentPosition = async () => {
     try {
       setLoadingLocation(true);
       const permission = await Location.requestForegroundPermissionsAsync();
       if (permission.status !== "granted") {
+        console.warn("[alert-form] location permission denied");
         Alert.alert("Permissão necessária", "Ative o GPS para preencher as coordenadas.");
         return;
       }
 
       const current = await Location.getCurrentPositionAsync({});
-      setLatitude(current.coords.latitude);
-      setLongitude(current.coords.longitude);
-    } catch {
+      const safeCurrent = toCoordinate(current.coords);
+      if (!safeCurrent) {
+        Alert.alert("Erro", "Coordenadas de localização inválidas.");
+        return;
+      }
+
+      setLatitude(safeCurrent.latitude);
+      setLongitude(safeCurrent.longitude);
+    } catch (error: any) {
+      console.warn("[alert-form] requestCurrentPosition failed:", error?.message || String(error));
       Alert.alert("Erro", "Não foi possível obter sua localização.");
     } finally {
       setLoadingLocation(false);
@@ -82,21 +94,26 @@ export default function AlertFormScreen() {
   };
 
   const handlePickImage = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (permission.status !== "granted") {
-      Alert.alert("Permissão necessária", "Permita acesso à galeria para anexar foto.");
-      return;
-    }
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (permission.status !== "granted") {
+        Alert.alert("Permissão necessária", "Permita acesso à galeria para anexar foto.");
+        return;
+      }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ["images"],
-      allowsEditing: true,
-      quality: 0.35,
-      base64: true,
-    });
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        quality: 0.35,
+        base64: true,
+      });
 
-    if (!result.canceled && result.assets[0]?.base64) {
-      setPhotoUrl(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      if (!result.canceled && result.assets[0]?.base64) {
+        setPhotoUrl(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      }
+    } catch (error: any) {
+      console.warn("[alert-form] handlePickImage failed:", error?.message || String(error));
+      Alert.alert("Erro", "Não foi possível abrir a galeria.");
     }
   };
 
@@ -146,7 +163,7 @@ export default function AlertFormScreen() {
       style={styles.container}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
     >
-      <View style={styles.headerRow}>
+      <View style={[styles.headerRow, { paddingTop: insets.top + 12 }]}>
         <TouchableOpacity style={styles.headerIconBtn} onPress={() => navigation.goBack()}>
           <Ionicons name="arrow-back" size={22} color="#fff" />
         </TouchableOpacity>
@@ -224,8 +241,13 @@ export default function AlertFormScreen() {
           initialRegion={mapRegion}
           region={mapRegion}
           onPress={(event) => {
-            setLatitude(event.nativeEvent.coordinate.latitude);
-            setLongitude(event.nativeEvent.coordinate.longitude);
+            const safeCoordinate = toCoordinate(event.nativeEvent.coordinate);
+            if (!safeCoordinate) {
+              console.warn("[alert-form] ignored invalid map press coordinate");
+              return;
+            }
+            setLatitude(safeCoordinate.latitude);
+            setLongitude(safeCoordinate.longitude);
           }}
         >
           {latitude !== null && longitude !== null ? (
@@ -233,8 +255,13 @@ export default function AlertFormScreen() {
               coordinate={{ latitude, longitude }}
               draggable
               onDragEnd={(event) => {
-                setLatitude(event.nativeEvent.coordinate.latitude);
-                setLongitude(event.nativeEvent.coordinate.longitude);
+                const safeCoordinate = toCoordinate(event.nativeEvent.coordinate);
+                if (!safeCoordinate) {
+                  console.warn("[alert-form] ignored invalid marker drag coordinate");
+                  return;
+                }
+                setLatitude(safeCoordinate.latitude);
+                setLongitude(safeCoordinate.longitude);
               }}
             >
               <Ionicons name="warning" size={34} color="#ef4444" />

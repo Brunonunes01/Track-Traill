@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { Tabs, useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -31,6 +32,7 @@ function SideMenu({ visible, onClose }: { visible: boolean; onClose: () => void 
   const menuItems = useMemo(
     () => [
       { key: "perfil", label: "Perfil", icon: "person-circle-outline", href: "/(tabs)/perfil" },
+      { key: "amigos", label: "Amigos", icon: "people-outline", href: "/friends" },
       { key: "rotas", label: "Minhas rotas", icon: "trail-sign-outline", href: "/(tabs)/proximas" },
       { key: "alertas", label: "Alertas", icon: "warning-outline", href: "/alert-form" },
       { key: "config", label: "Configurações", icon: "settings-outline", href: "/configuracoes" },
@@ -83,8 +85,12 @@ function SideMenu({ visible, onClose }: { visible: boolean; onClose: () => void 
             style={styles.logoutItem}
             onPress={async () => {
               onClose();
-              await signOut(auth);
-              router.replace("/login");
+              try {
+                await signOut(auth);
+                router.replace("/login");
+              } catch (error: any) {
+                Alert.alert("Erro", error?.message || "Não foi possível sair da conta.");
+              }
             }}
           >
             <Ionicons name="log-out-outline" size={20} color="#ef4444" />

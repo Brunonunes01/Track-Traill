@@ -2,22 +2,31 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import React from 'react';
-import { ImageBackground, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, ImageBackground, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import WeatherCard from '../components/WeatherCard';
+import { toCoordinateArray } from '../utils/geo';
 
-export default function ActivityViewScreen() {
-    const route = useRoute();
-    const navigation = useNavigation();
-    const { atividade }: any = route.params;
+type ActivityViewScreenProps = {
+    navigation?: any;
+    route?: any;
+};
+
+export default function ActivityViewScreen(props: ActivityViewScreenProps) {
+    const hookRoute = useRoute<any>();
+    const hookNavigation = useNavigation<any>();
+    const route = props.route || hookRoute;
+    const navigation = props.navigation || hookNavigation;
+    const atividade: any = route.params?.atividade || {};
+    const routePoints = toCoordinateArray(atividade.rota);
 
     // Verifica se tem rota gravada válida
-    const hasRoute = atividade.rota && atividade.rota.length > 0;
+    const hasRoute = routePoints.length > 0;
     
     // Pega o ponto inicial para centralizar o mapa
     const initialRegion = hasRoute ? {
-        latitude: atividade.rota[0].latitude,
-        longitude: atividade.rota[0].longitude,
+        latitude: routePoints[0].latitude,
+        longitude: routePoints[0].longitude,
         latitudeDelta: 0.015,
         longitudeDelta: 0.015,
     } : undefined;
@@ -43,14 +52,14 @@ export default function ActivityViewScreen() {
                         zoomEnabled={true}
                     >
                         <Polyline
-                            coordinates={atividade.rota}
+                            coordinates={routePoints}
                             strokeColor="#ffd700" // Linha dourada premium
                             strokeWidth={5}
                         />
-                        <Marker coordinate={atividade.rota[0]} title="Início">
+                        <Marker coordinate={routePoints[0]} title="Início">
                              <Ionicons name="location" size={40} color="#22c55e" />
                         </Marker>
-                        <Marker coordinate={atividade.rota[atividade.rota.length - 1]} title="Fim">
+                        <Marker coordinate={routePoints[routePoints.length - 1]} title="Fim">
                              <Ionicons name="flag" size={40} color="#ef4444" />
                         </Marker>
                     </MapView>
@@ -122,8 +131,8 @@ export default function ActivityViewScreen() {
 
                     {hasRoute ? (
                         <WeatherCard
-                            latitude={atividade.rota[0].latitude}
-                            longitude={atividade.rota[0].longitude}
+                            latitude={routePoints[0].latitude}
+                            longitude={routePoints[0].longitude}
                         />
                     ) : (
                         <View style={styles.noWeatherBox}>
@@ -133,7 +142,7 @@ export default function ActivityViewScreen() {
                         </View>
                     )}
 
-                    <TouchableOpacity style={styles.shareButton} onPress={() => alert('Em breve: Partilhar no Instagram!')}>
+                    <TouchableOpacity style={styles.shareButton} onPress={() => Alert.alert("Em breve", "Partilha será disponibilizada em breve.")}>
                         <LinearGradient colors={['#ffd700', '#ca8a04']} style={styles.gradientBtn}>
                             <Ionicons name="share-social" size={22} color="#000" />
                             <Text style={styles.shareText}>Partilhar Conquista</Text>
