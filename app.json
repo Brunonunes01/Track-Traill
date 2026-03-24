@@ -4,7 +4,7 @@
     "slug": "tracktrail",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/logo.png",
     "scheme": "tracktrail",
     "userInterfaceStyle": "automatic",
     "ios": {
@@ -18,7 +18,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "foregroundImage": "./assets/images/logo.png",
         "backgroundColor": "#ffffff"
       },
       "permissions": [
@@ -27,11 +27,15 @@
         "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "INTERNET"
+        "INTERNET",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION"
       ],
       "config": {
         "googleMaps": {
-          "apiKey": ""
+          "apiKey": "AIzaSyAfY8TSIlNySkNoaaMbgaGkLgPDObNPaaQ"
         }
       },
       "package": "com.bruno.tracktrail"
@@ -60,12 +64,12 @@
         }
       ]
     ],
-    "newArchEnabled": false,
+    "newArchEnabled": true,
     "typedRoutes": true,
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "6e432bc0-4df6-4b51-99fd-a2b7c26590ac"
+        "projectId": "b15aa9ff-e995-4b01-8c4d-b9be8953e564"
       }
     }
   }

@@ -45,6 +45,8 @@ type SaveRouteInput = {
 const TRACKING_TASK_NAME = "tracktrail-background-location";
 const ACTIVE_SESSION_KEY = "@tracktrail/active-session";
 const MIN_POINT_DISTANCE_METERS = 4;
+const MAX_GPS_JUMP_METERS = 250;
+const MAX_REASONABLE_SPEED_MPS = 22; // ~79 km/h, tolerante para descartar apenas outliers de GPS.
 
 const calculateDistanceKm = (
   lat1: number,
@@ -67,6 +69,24 @@ const calculateDistanceKm = (
   return earthRadius * c;
 };
 
+const isInvalidGpsJump = (
+  previous: ActivityPoint,
+  current: ActivityPoint,
+  segmentMeters: number
+): boolean => {
+  if (segmentMeters <= MAX_GPS_JUMP_METERS) {
+    return false;
+  }
+
+  const elapsedMs = current.timestamp - previous.timestamp;
+  if (elapsedMs <= 0) {
+    return true;
+  }
+
+  const speedMps = segmentMeters / (elapsedMs / 1000);
+  return speedMps > MAX_REASONABLE_SPEED_MPS;
+};
+
 const appendPoint = (session: ActiveActivitySession, point: ActivityPoint) => {
   const previous = session.points[session.points.length - 1];
 
@@ -77,8 +97,13 @@ const appendPoint = (session: ActiveActivitySession, point: ActivityPoint) => {
       point.latitude,
       point.longitude
     );
+    const addedMeters = addedKm * 1000;
 
-    if (addedKm * 1000 < MIN_POINT_DISTANCE_METERS) {
+    if (addedMeters < MIN_POINT_DISTANCE_METERS) {
+      return session;
+    }
+
+    if (isInvalidGpsJump(previous, point, addedMeters)) {
       return session;
     }
 
