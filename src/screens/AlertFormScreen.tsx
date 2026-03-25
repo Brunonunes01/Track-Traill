@@ -19,7 +19,7 @@ import {
 import MapView, { Marker, PROVIDER_DEFAULT } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
-import { ALERT_TYPE_META, ALERT_TYPES, AlertStatus, AlertType } from "../models/alerts";
+import { ALERT_TYPE_META, ALERT_TYPES, AlertType } from "../models/alerts";
 import { createAlert } from "../services/alertService";
 import { FALLBACK_REGION, getRegionWithFallback, toCoordinate } from "../utils/geo";
 
@@ -49,7 +49,6 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
 
   const [type, setType] = useState<AlertType>("acidente");
   const [description, setDescription] = useState("");
-  const [status, setStatus] = useState<AlertStatus>("ativo");
   const [latitude, setLatitude] = useState<number | null>(safeInitialPoint?.latitude ?? null);
   const [longitude, setLongitude] = useState<number | null>(safeInitialPoint?.longitude ?? null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
@@ -139,7 +138,7 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
           longitude,
           routeId: initialParams.routeId || null,
           routeName: initialParams.routeName || null,
-          status,
+          status: "ativo",
           photoUrl,
         },
         auth.currentUser
@@ -217,22 +216,10 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
           placeholderTextColor="#6b7280"
         />
 
-        <Text style={styles.label}>Status inicial</Text>
-        <View style={styles.statusRow}>
-          <TouchableOpacity
-            style={[styles.statusBtn, status === "ativo" ? styles.statusActive : null]}
-            onPress={() => setStatus("ativo")}
-          >
-            <Text style={[styles.statusText, status === "ativo" ? styles.statusTextActive : null]}>Ativo</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.statusBtn, status === "resolvido" ? styles.statusResolved : null]}
-            onPress={() => setStatus("resolvido")}
-          >
-            <Text style={[styles.statusText, status === "resolvido" ? styles.statusTextActive : null]}>Resolvido</Text>
-          </TouchableOpacity>
-        </View>
+        <Text style={styles.label}>Tempo de vida do alerta</Text>
+        <Text style={styles.routeBadge}>
+          O alerta é publicado como ativo e fica visível por tempo limitado.
+        </Text>
 
         <Text style={styles.label}>Local do alerta</Text>
         <MapView
@@ -370,34 +357,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#111827",
     color: "#fff",
     padding: 12,
-  },
-  statusRow: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  statusBtn: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: "#374151",
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: "center",
-    backgroundColor: "#111827",
-  },
-  statusActive: {
-    borderColor: "#ef4444",
-    backgroundColor: "rgba(239,68,68,0.15)",
-  },
-  statusResolved: {
-    borderColor: "#10b981",
-    backgroundColor: "rgba(16,185,129,0.15)",
-  },
-  statusText: {
-    color: "#d1d5db",
-    fontWeight: "700",
-  },
-  statusTextActive: {
-    color: "#fff",
   },
   map: {
     height: 220,

@@ -21,7 +21,15 @@ const formatDate = (isoDate: string) => {
 
 export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
   const meta = ALERT_TYPE_META[alert.type];
-  const statusColor = alert.status === "ativo" ? "#ef4444" : "#10b981";
+  const statusColor =
+    alert.status === "ativo"
+      ? "#ef4444"
+      : alert.status === "resolvido"
+        ? "#10b981"
+        : alert.status === "expirado"
+          ? "#f59e0b"
+          : "#9ca3af";
+  const expirationLabel = formatDate(alert.expiresAt);
 
   return (
     <TouchableOpacity
@@ -48,10 +56,19 @@ export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
       </Text>
 
       <View style={styles.footerRow}>
-        <Text style={styles.dateText}>{formatDate(alert.createdAt)}</Text>
-        <View style={styles.confirmRow}>
-          <Ionicons name="checkmark-done" size={15} color="#9ca3af" />
-          <Text style={styles.confirmText}>{alert.confirmations}</Text>
+        <View>
+          <Text style={styles.dateText}>Criado: {formatDate(alert.createdAt)}</Text>
+          <Text style={styles.expireText}>Expira: {expirationLabel}</Text>
+        </View>
+        <View style={styles.metaRight}>
+          <View style={styles.confirmRow}>
+            <Ionicons name="checkmark-done" size={15} color="#9ca3af" />
+            <Text style={styles.confirmText}>{alert.confirmations}</Text>
+          </View>
+          <View style={styles.confirmRow}>
+            <Ionicons name="flag-outline" size={14} color="#f59e0b" />
+            <Text style={styles.confirmText}>{alert.reportCount || 0}</Text>
+          </View>
         </View>
       </View>
     </TouchableOpacity>
@@ -115,12 +132,22 @@ const styles = StyleSheet.create({
   footerRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-end",
+    gap: 10,
   },
   dateText: {
     color: "#9ca3af",
     fontSize: 12,
     flexShrink: 1,
+  },
+  expireText: {
+    color: "#6b7280",
+    fontSize: 11,
+    marginTop: 2,
+  },
+  metaRight: {
+    alignItems: "flex-end",
+    gap: 3,
   },
   confirmRow: {
     flexDirection: "row",

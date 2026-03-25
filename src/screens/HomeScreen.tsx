@@ -8,6 +8,7 @@ import {
   Alert,
   Linking,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -44,6 +45,7 @@ export default function HomeScreen({ navigation }: any) {
   const [mapType, setMapType] = useState<MapType>("standard");
   const [activeFilter, setActiveFilter] = useState("Todos");
   const [nearbyOnly, setNearbyOnly] = useState(false);
+  const [routeActionVisible, setRouteActionVisible] = useState(false);
   const [loadingRoutes, setLoadingRoutes] = useState(true);
   const [loadingAlerts, setLoadingAlerts] = useState(true);
   const [routeError, setRouteError] = useState<string | null>(null);
@@ -387,6 +389,16 @@ export default function HomeScreen({ navigation }: any) {
     });
   };
 
+  const handleOpenSuggestRoute = () => {
+    setRouteActionVisible(false);
+    navigation.navigate("SuggestRoute");
+  };
+
+  const handleOpenTraceRoute = () => {
+    setRouteActionVisible(false);
+    navigation.navigate("TraceRoute");
+  };
+
   const activeAlertsForRoute = selectedRoute ? alertsByRoute[selectedRoute.id] || [] : [];
   const selectedRouteActiveAlerts = activeAlertsForRoute.filter((item) => item.status === "ativo");
 
@@ -428,9 +440,6 @@ export default function HomeScreen({ navigation }: any) {
           showsMyLocationButton={false}
           onMapReady={() => {
             console.log("[map] MapView native component ready.");
-          }}
-          onError={(error) => {
-            console.error("[map] MapView internal error captured:", error);
           }}
         >
           {safeVisibleRoutes.map((route) => {
@@ -581,6 +590,44 @@ export default function HomeScreen({ navigation }: any) {
           <Text style={styles.errorText}>{locationError}</Text>
         </View>
       ) : null}
+
+      {routeActionVisible ? (
+        <Pressable style={styles.routeActionBackdrop} onPress={() => setRouteActionVisible(false)} />
+      ) : null}
+
+      {routeActionVisible ? (
+        <View
+          style={[
+            styles.routeActionMenu,
+            selectedRoute || selectedAlert
+              ? { bottom: floatingBottomBase + 264 }
+              : { bottom: floatingBottomBase + 118 },
+          ]}
+        >
+          <TouchableOpacity style={styles.routeActionItem} onPress={handleOpenSuggestRoute}>
+            <Ionicons name="sparkles-outline" size={17} color="#f8fafc" />
+            <Text style={styles.routeActionText}>Sugerir rota</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={styles.routeActionItem} onPress={handleOpenTraceRoute}>
+            <Ionicons name="create-outline" size={17} color="#f8fafc" />
+            <Text style={styles.routeActionText}>Traçar rota</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      <TouchableOpacity
+        style={[
+          styles.fabRoute,
+          selectedRoute || selectedAlert
+            ? { bottom: floatingBottomBase + 206 }
+            : { bottom: floatingBottomBase + 60 },
+        ]}
+        onPress={() => setRouteActionVisible((current) => !current)}
+      >
+        <Ionicons name="trail-sign" size={20} color="#000" />
+        <Text style={styles.fabText}>Nova rota</Text>
+      </TouchableOpacity>
 
       <TouchableOpacity
         style={[
@@ -858,6 +905,18 @@ const styles = StyleSheet.create({
     elevation: 8,
     gap: 6,
   },
+  fabRoute: {
+    position: "absolute",
+    right: 20,
+    backgroundColor: "#facc15",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    borderRadius: 28,
+    elevation: 8,
+    gap: 6,
+  },
   fabSecondary: {
     position: "absolute",
     right: 20,
@@ -871,6 +930,38 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   fabText: { color: "#000", fontWeight: "800", fontSize: 12 },
+  routeActionBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(2, 6, 23, 0.14)",
+  },
+  routeActionMenu: {
+    position: "absolute",
+    right: 20,
+    backgroundColor: "#0f172a",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#334155",
+    padding: 8,
+    gap: 6,
+    minWidth: 176,
+    elevation: 12,
+  },
+  routeActionItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#111827",
+    borderWidth: 1,
+    borderColor: "#1f2937",
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  routeActionText: {
+    color: "#f8fafc",
+    fontWeight: "700",
+    fontSize: 13,
+  },
 
   bottomCardWrap: {
     position: "absolute",

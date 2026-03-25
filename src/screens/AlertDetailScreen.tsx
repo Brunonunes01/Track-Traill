@@ -15,8 +15,8 @@ import MapView, { Marker, PROVIDER_DEFAULT } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
 import AlertCard from "../components/AlertCard";
-import { ALERT_TYPE_META, TrailAlert } from "../models/alerts";
-import { confirmAlert, markAlertAsResolved, subscribeAlerts } from "../services/alertService";
+import { ALERT_REPORT_REASONS, ALERT_TYPE_META, TrailAlert } from "../models/alerts";
+import { confirmAlert, markAlertAsResolved, reportAlert, subscribeAlerts } from "../services/alertService";
 import { toCoordinate } from "../utils/geo";
 
 type AlertDetailParams = {
@@ -40,6 +40,7 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
   const [alertItem, setAlertItem] = useState<TrailAlert | null>(alertData || null);
   const [loading, setLoading] = useState(!alertData);
   const [submitting, setSubmitting] = useState(false);
+  const [reporting, setReporting] = useState(false);
 
   useEffect(() => {
     if (alertData) {
@@ -67,6 +68,12 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
     return auth.currentUser?.uid === alertItem.userId;
   }, [alertItem]);
 
+  const currentUserUid = auth.currentUser?.uid;
+  const alreadyReported = useMemo(() => {
+    if (!alertItem || !currentUserUid) return false;
+    return Boolean(alertItem.reports?.[currentUserUid]);
+  }, [alertItem, currentUserUid]);
+
   const handleConfirm = async () => {
     if (!alertItem) return;
 
@@ -93,6 +100,43 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleReport = (reasonId: (typeof ALERT_REPORT_REASONS)[number]["id"]) => {
+    if (!alertItem) return;
+    if (!auth.currentUser) {
+      Alert.alert("Login necessário", "Você precisa entrar na conta para denunciar.");
+      return;
+    }
+
+    if (auth.currentUser.uid === alertItem.userId) {
+      Alert.alert("Ação não permitida", "Você não pode denunciar um alerta criado por você.");
+      return;
+    }
+
+    if (alreadyReported) {
+      Alert.alert("Denúncia já enviada", "Você já denunciou este alerta.");
+      return;
+    }
+
+    Alert.alert("Confirmar denúncia", "Deseja enviar esta denúncia para moderação?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Denunciar",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            setReporting(true);
+            await reportAlert(alertItem.id, reasonId, auth.currentUser);
+            Alert.alert("Denúncia registrada", "Obrigado. A equipe de moderação irá analisar.");
+          } catch (error: any) {
+            Alert.alert("Erro", error?.message || "Não foi possível enviar a denúncia.");
+          } finally {
+            setReporting(false);
+          }
+        },
+      },
+    ]);
   };
 
   if (loading) {
@@ -157,10 +201,12 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
           <Text style={styles.metaTitle}>Informações</Text>
           <Text style={styles.metaText}>Tipo: {meta.label}</Text>
           <Text style={styles.metaText}>Status: {alertItem.status}</Text>
+          <Text style={styles.metaText}>Expira em: {new Date(alertItem.expiresAt).toLocaleString("pt-BR")}</Text>
           <Text style={styles.metaText}>Rota: {alertItem.routeName || "Não vinculada"}</Text>
           <Text style={styles.metaText}>
             Autor: {alertItem.userDisplayName || alertItem.userEmail || "Usuário"}
           </Text>
+          <Text style={styles.metaText}>Denúncias: {alertItem.reportCount || 0}</Text>
           <Text style={styles.metaText}>
             Coordenadas: {markerCoordinate ? `${markerCoordinate.latitude.toFixed(5)}, ${markerCoordinate.longitude.toFixed(5)}` : "indisponíveis"}
           </Text>
@@ -192,6 +238,29 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
             <Text style={styles.secondaryBtnText}>Marcar como resolvido</Text>
           </TouchableOpacity>
         ) : null}
+
+        <View style={styles.reportCard}>
+          <Text style={styles.reportTitle}>Denunciar alerta</Text>
+          <Text style={styles.reportSubtitle}>
+            Use apenas em caso de informação falsa, duplicada ou conteúdo inadequado.
+          </Text>
+          <View style={styles.reportReasons}>
+            {ALERT_REPORT_REASONS.map((reason) => (
+              <TouchableOpacity
+                key={reason.id}
+                style={styles.reportReasonBtn}
+                disabled={reporting || alreadyReported}
+                onPress={() => handleReport(reason.id)}
+              >
+                <Ionicons name="flag-outline" size={16} color="#fca5a5" />
+                <Text style={styles.reportReasonText}>{reason.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {alreadyReported ? (
+            <Text style={styles.reportNotice}>Você já denunciou este alerta.</Text>
+          ) : null}
+        </View>
       </ScrollView>
     </View>
   );
@@ -294,6 +363,47 @@ const styles = StyleSheet.create({
   secondaryBtnText: {
     color: "#d1d5db",
     fontWeight: "700",
+  },
+  reportCard: {
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: "rgba(248,113,113,0.35)",
+    borderRadius: 12,
+    backgroundColor: "rgba(69, 10, 10, 0.28)",
+    padding: 12,
+    gap: 8,
+  },
+  reportTitle: {
+    color: "#fee2e2",
+    fontWeight: "700",
+    fontSize: 15,
+  },
+  reportSubtitle: {
+    color: "#fca5a5",
+    fontSize: 12,
+  },
+  reportReasons: {
+    gap: 8,
+  },
+  reportReasonBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "rgba(248,113,113,0.4)",
+    backgroundColor: "rgba(127,29,29,0.35)",
+  },
+  reportReasonText: {
+    color: "#fee2e2",
+    fontWeight: "600",
+  },
+  reportNotice: {
+    color: "#fca5a5",
+    fontSize: 12,
+    marginTop: 2,
   },
   centerBox: {
     flex: 1,

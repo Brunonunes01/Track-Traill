@@ -20,6 +20,8 @@ const routeMap: Record<string, string> = {
   Ajuda: "/ajuda",
   Admin: "/admin",
   AdminDashboard: "/admin",
+  SuggestRoute: "/suggest-route",
+  TraceRoute: "/trace-route",
 };
 
 export function useExpoNavigationBridge() {

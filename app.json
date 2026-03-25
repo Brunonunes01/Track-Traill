@@ -67,6 +67,7 @@
     "newArchEnabled": true,
     "typedRoutes": true,
     "extra": {
+      "googleDirectionsApiKey": "AIzaSyAfY8TSIlNySkNoaaMbgaGkLgPDObNPaaQ",
       "router": {},
       "eas": {
         "projectId": "b15aa9ff-e995-4b01-8c4d-b9be8953e564"

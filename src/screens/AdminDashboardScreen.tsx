@@ -22,6 +22,12 @@ import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import AdminUserList from "../../components/AdminUserList";
 import { database } from "../../services/connectionFirebase";
 import { toCoordinate, toCoordinateArray } from "../utils/geo";
+import { TrailAlert } from "../models/alerts";
+import {
+  markAlertAsResolved,
+  removeAlertByAdmin,
+  subscribeAllAlertsForAdmin,
+} from "../services/alertService";
 import {
   addAdminByEmail,
   removeAdminRole,
@@ -31,7 +37,8 @@ import {
   subscribeUsers,
 } from "../../services/adminService";
 
-type AdminSection = "add" | "admins" | "users" | "tools" | "routes" | "settings";
+type AdminSection = "add" | "admins" | "users" | "tools" | "routes" | "settings" | "alerts";
+type AlertFilter = "todos" | "ativos" | "expirados" | "denunciados" | "resolvidos" | "removidos";
 
 type AdminRouteItem = {
   id: string;
@@ -66,6 +73,9 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
   const [rotaSelecionada, setRotaSelecionada] = useState<any>(null);
   const [officialRoutes, setOfficialRoutes] = useState<AdminRouteItem[]>([]);
   const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
+  const [alerts, setAlerts] = useState<TrailAlert[]>([]);
+  const [alertFilter, setAlertFilter] = useState<AlertFilter>("todos");
+  const [workingAlertId, setWorkingAlertId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeCurrentUserRole(({ isAdmin: adminAllowed, user }: any) => {
@@ -137,11 +147,21 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
       setOfficialRoutes(lista);
     });
 
+    const unsubscribeAlerts = subscribeAllAlertsForAdmin(
+      (incoming) => {
+        setAlerts(incoming);
+      },
+      () => {
+        setAlerts([]);
+      }
+    );
+
     return () => {
       unsubscribeAdmins();
       unsubscribeUsers();
       unsubscribePendentes();
       unsubscribeOfficialRoutes();
+      unsubscribeAlerts();
     };
   }, [isAdmin]);
 
@@ -149,6 +169,37 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
     () => users.filter((user) => user.role !== "admin").length,
     [users]
   );
+
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter((item) => {
+      if (alertFilter === "todos") return true;
+      if (alertFilter === "ativos") return item.status === "ativo";
+      if (alertFilter === "expirados") return item.status === "expirado";
+      if (alertFilter === "resolvidos") return item.status === "resolvido";
+      if (alertFilter === "removidos") return item.status === "removido";
+      if (alertFilter === "denunciados") return (item.reportCount || 0) > 0;
+      return true;
+    });
+  }, [alertFilter, alerts]);
+
+  const formatAlertDate = (value?: string) => {
+    if (!value) return "Data não informada";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return "Data não informada";
+    return parsed.toLocaleString("pt-BR");
+  };
+
+  const reportSummary = (item: TrailAlert) => {
+    if (!item.reports) return "Sem denúncias";
+    const reasons = Object.values(item.reports).reduce<Record<string, number>>((acc, report) => {
+      const key = report.reason;
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+    const entries = Object.entries(reasons);
+    if (entries.length === 0) return "Sem denúncias";
+    return entries.map(([reason, count]) => `${reason}: ${count}`).join(" | ");
+  };
 
   const handleAddAdmin = async () => {
     try {
@@ -279,6 +330,39 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
     );
   };
 
+  const handleResolveAlertAdmin = async (alertId: string) => {
+    try {
+      setWorkingAlertId(alertId);
+      await markAlertAsResolved(alertId);
+      Alert.alert("Alerta atualizado", "Alerta marcado como resolvido.");
+    } catch (error: any) {
+      Alert.alert("Erro", error?.message || "Não foi possível resolver o alerta.");
+    } finally {
+      setWorkingAlertId(null);
+    }
+  };
+
+  const handleRemoveAlertAdmin = (alertId: string) => {
+    Alert.alert("Remover alerta", "Este alerta será ocultado para usuários comuns.", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Remover",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            setWorkingAlertId(alertId);
+            await removeAlertByAdmin(alertId, currentUserId);
+            Alert.alert("Alerta removido", "O alerta foi removido da visualização pública.");
+          } catch (error: any) {
+            Alert.alert("Erro", error?.message || "Não foi possível remover o alerta.");
+          } finally {
+            setWorkingAlertId(null);
+          }
+        },
+      },
+    ]);
+  };
+
   const selectedStartPoint = useMemo(() => toCoordinate(rotaSelecionada?.startPoint), [rotaSelecionada]);
   const selectedEndPoint = useMemo(() => toCoordinate(rotaSelecionada?.endPoint), [rotaSelecionada]);
   const selectedPath = useMemo(() => toCoordinateArray(rotaSelecionada?.rotaCompleta), [rotaSelecionada]);
@@ -336,6 +420,15 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
       >
         <Text style={[styles.sectionBtnText, activeSection === "routes" && styles.sectionBtnTextActive]}>
           Gerenciar rotas
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.sectionBtn, activeSection === "alerts" && styles.sectionBtnActive]}
+        onPress={() => setActiveSection("alerts")}
+      >
+        <Text style={[styles.sectionBtnText, activeSection === "alerts" && styles.sectionBtnTextActive]}>
+          Moderação de alertas
         </Text>
       </TouchableOpacity>
     </View>
@@ -423,6 +516,111 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
             <Ionicons name="server-outline" size={20} color="#60a5fa" />
             <Text style={styles.systemItemText}>Conectado ao Firebase Realtime Database</Text>
           </View>
+        </View>
+      );
+    }
+
+    if (activeSection === "alerts") {
+      return (
+        <View style={styles.sectionCard}>
+          <Text style={styles.sectionTitle}>Moderação de alertas ({alerts.length})</Text>
+          <Text style={styles.sectionDescription}>
+            Filtre por status e trate denúncias para manter o sistema confiável.
+          </Text>
+
+          <View style={styles.alertFilterRow}>
+            {(
+              [
+                { key: "todos", label: "Todos" },
+                { key: "ativos", label: "Ativos" },
+                { key: "expirados", label: "Expirados" },
+                { key: "denunciados", label: "Denunciados" },
+                { key: "resolvidos", label: "Resolvidos" },
+                { key: "removidos", label: "Removidos" },
+              ] as { key: AlertFilter; label: string }[]
+            ).map((item) => (
+              <TouchableOpacity
+                key={item.key}
+                onPress={() => setAlertFilter(item.key)}
+                style={[
+                  styles.alertFilterChip,
+                  alertFilter === item.key ? styles.alertFilterChipActive : null,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.alertFilterText,
+                    alertFilter === item.key ? styles.alertFilterTextActive : null,
+                  ]}
+                >
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          {filteredAlerts.length === 0 ? (
+            <View style={styles.emptyTools}>
+              <Ionicons name="shield-checkmark-outline" size={48} color="#94a3b8" />
+              <Text style={styles.emptyToolsText}>Nenhum alerta para o filtro atual.</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={filteredAlerts}
+              keyExtractor={(item) => item.id}
+              scrollEnabled={false}
+              renderItem={({ item }) => (
+                <View style={styles.alertAdminCard}>
+                  <View style={styles.alertAdminHeader}>
+                    <Text style={styles.alertAdminType}>{item.type}</Text>
+                    <Text style={styles.alertAdminStatus}>Status: {item.status}</Text>
+                  </View>
+
+                  <Text style={styles.alertAdminDescription}>{item.description}</Text>
+                  <Text style={styles.alertAdminMeta}>Criado: {formatAlertDate(item.createdAt)}</Text>
+                  <Text style={styles.alertAdminMeta}>Expira: {formatAlertDate(item.expiresAt)}</Text>
+                  <Text style={styles.alertAdminMeta}>Rota: {item.routeName || "Não vinculada"}</Text>
+                  <Text style={styles.alertAdminMeta}>Denúncias: {item.reportCount || 0}</Text>
+                  <Text style={styles.alertAdminMeta}>Resumo denúncias: {reportSummary(item)}</Text>
+                  {item.reports
+                    ? Object.values(item.reports)
+                        .slice(0, 3)
+                        .map((report, index) => (
+                          <Text key={`${item.id}-report-${index}`} style={styles.alertAdminReportItem}>
+                            • {report.reason} — {report.userEmail || report.userDisplayName || report.userId}
+                          </Text>
+                        ))
+                    : null}
+
+                  <View style={styles.alertAdminActions}>
+                    <TouchableOpacity
+                      style={styles.alertResolveBtn}
+                      disabled={workingAlertId === item.id || item.status !== "ativo"}
+                      onPress={() => handleResolveAlertAdmin(item.id)}
+                    >
+                      {workingAlertId === item.id ? (
+                        <ActivityIndicator size="small" color="#d1fae5" />
+                      ) : (
+                        <>
+                          <Ionicons name="checkmark-circle-outline" size={16} color="#d1fae5" />
+                          <Text style={styles.alertResolveText}>Resolver</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.alertRemoveBtn}
+                      disabled={workingAlertId === item.id || item.status === "removido"}
+                      onPress={() => handleRemoveAlertAdmin(item.id)}
+                    >
+                      <Ionicons name="trash-outline" size={16} color="#fecaca" />
+                      <Text style={styles.alertRemoveText}>Remover</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+            />
+          )}
         </View>
       );
     }
@@ -717,6 +915,111 @@ const styles = StyleSheet.create({
   },
   routeCardTitle: { color: "#fff", fontWeight: "700", fontSize: 14 },
   routeCardMeta: { color: "#aaa", fontSize: 12, marginTop: 2 },
+  alertFilterRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 12,
+  },
+  alertFilterChip: {
+    borderWidth: 1,
+    borderColor: "#374151",
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    backgroundColor: "#111827",
+  },
+  alertFilterChipActive: {
+    borderColor: "#fbbf24",
+    backgroundColor: "rgba(251,191,36,0.18)",
+  },
+  alertFilterText: {
+    color: "#cbd5e1",
+    fontWeight: "600",
+    fontSize: 12,
+  },
+  alertFilterTextActive: {
+    color: "#fde68a",
+  },
+  alertAdminCard: {
+    backgroundColor: "#161616",
+    borderWidth: 1,
+    borderColor: "#2c2c2c",
+    borderRadius: 12,
+    padding: 12,
+    gap: 5,
+    marginBottom: 10,
+  },
+  alertAdminHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 8,
+  },
+  alertAdminType: {
+    color: "#f8fafc",
+    fontWeight: "700",
+    fontSize: 13,
+    textTransform: "capitalize",
+  },
+  alertAdminStatus: {
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  alertAdminDescription: {
+    color: "#e5e7eb",
+    fontSize: 13,
+    lineHeight: 19,
+    marginBottom: 2,
+  },
+  alertAdminMeta: {
+    color: "#94a3b8",
+    fontSize: 12,
+  },
+  alertAdminReportItem: {
+    color: "#cbd5e1",
+    fontSize: 12,
+  },
+  alertAdminActions: {
+    marginTop: 8,
+    flexDirection: "row",
+    gap: 8,
+  },
+  alertResolveBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "rgba(16,185,129,0.5)",
+    backgroundColor: "rgba(6,78,59,0.45)",
+    borderRadius: 10,
+    minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  alertResolveText: {
+    color: "#d1fae5",
+    fontWeight: "700",
+    fontSize: 12,
+  },
+  alertRemoveBtn: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: "rgba(239,68,68,0.45)",
+    backgroundColor: "rgba(127,29,29,0.25)",
+    borderRadius: 10,
+    minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  alertRemoveText: {
+    color: "#fecaca",
+    fontWeight: "700",
+    fontSize: 12,
+  },
   deleteRouteBtn: {
     width: 42,
     height: 42,

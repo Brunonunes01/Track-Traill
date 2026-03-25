@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import MapView, { MapPressEvent, Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import { auth, database } from '../../services/connectionFirebase';
+import { fetchGoogleDirections, travelModeFromActivity } from "../services/directionsService";
 import { FALLBACK_REGION, toCoordinate, toCoordinateArray } from '../utils/geo';
 
 type Coordinate = { latitude: number; longitude: number; };
@@ -39,6 +40,8 @@ export default function SuggestRouteScreen() {
   const [tipoRota, setTipoRota] = useState('Ciclismo');
   const [dificuldade, setDificuldade] = useState('Média');
   const [distanciaCalculada, setDistanciaCalculada] = useState<string | null>(null);
+  const [tempoCalculado, setTempoCalculado] = useState<string | null>(null);
+  const [duracaoSegundos, setDuracaoSegundos] = useState<number | null>(null);
 
   const categorias = ['Ciclismo', 'Corrida', 'Caminhada'];
   const dificuldades = ['Fácil', 'Média', 'Difícil'];
@@ -100,30 +103,31 @@ export default function SuggestRouteScreen() {
   const calcularRotaAcompanhandoEstrada = async (start: Coordinate, end: Coordinate) => {
     setIsCalculating(true);
     try {
-      const url = `https://router.project-osrm.org/route/v1/foot/${start.longitude},${start.latitude};${end.longitude},${end.latitude}?geometries=geojson`;
-      const response = await fetch(url);
-      const data = await response.json();
-      if (data.routes && data.routes.length > 0) {
-        const coordsDaEstrada = toCoordinateArray(
-          data.routes[0].geometry.coordinates.map((coord: [number, number]) => ({
-            latitude: coord[1],
-            longitude: coord[0],
-          }))
-        );
-        setRouteCoordinates(coordsDaEstrada);
-        const distMetros = data.routes[0].distance;
-        setDistanciaCalculada((distMetros / 1000).toFixed(1) + ' km');
-      } else {
-        setRouteCoordinates([start, end]);
-        setDistanciaCalculada('N/A');
-      }
+      const result = await fetchGoogleDirections({
+        origin: start,
+        destination: end,
+        mode: travelModeFromActivity(tipoRota),
+      });
+
+      setRouteCoordinates(toCoordinateArray(result.coordinates));
+      setDistanciaCalculada(result.distanceText);
+      setTempoCalculado(result.durationText);
+      setDuracaoSegundos(result.durationSeconds);
     } catch {
-      setRouteCoordinates([start, end]);
-      setDistanciaCalculada('N/A');
+      setRouteCoordinates([]);
+      setDistanciaCalculada(null);
+      setTempoCalculado(null);
+      setDuracaoSegundos(null);
+      Alert.alert("Falha ao calcular rota", "Não foi possível calcular a rota real agora. Tente novamente.");
     } finally {
       setIsCalculating(false);
     }
   };
+
+  useEffect(() => {
+    if (!startPoint || !endPoint) return;
+    calcularRotaAcompanhandoEstrada(startPoint, endPoint);
+  }, [tipoRota]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleMapPress = (e: MapPressEvent) => {
     const coords = toCoordinate(e.nativeEvent.coordinate);
@@ -146,6 +150,8 @@ export default function SuggestRouteScreen() {
     setEndPoint(null);
     setRouteCoordinates([]);
     setDistanciaCalculada(null);
+    setTempoCalculado(null);
+    setDuracaoSegundos(null);
   };
 
   const handleEnviarSugestao = async () => {
@@ -157,7 +163,20 @@ export default function SuggestRouteScreen() {
     try {
       const pendentesRef = ref(database, 'rotas_pendentes');
       await set(push(pendentesRef), {
-        nome: nomeRota, tipo: tipoRota, dificuldade, distancia: distanciaCalculada || '0 km', descricao: descricao || 'Sem descrição.', startPoint, endPoint, rotaCompleta: routeCoordinates, sugeridoPor: user.uid, emailAutor: user.email, status: 'pendente', criadoEm: new Date().toISOString()
+        nome: nomeRota,
+        tipo: tipoRota,
+        dificuldade,
+        distancia: distanciaCalculada || '0 km',
+        tempoEstimado: tempoCalculado || null,
+        duracaoSegundos: duracaoSegundos || null,
+        descricao: descricao || 'Sem descrição.',
+        startPoint,
+        endPoint,
+        rotaCompleta: routeCoordinates,
+        sugeridoPor: user.uid,
+        emailAutor: user.email,
+        status: 'pendente',
+        criadoEm: new Date().toISOString()
       });
       Alert.alert('Sucesso!', 'A sua rota foi enviada.', [{ text: 'Voltar', onPress: () => navigation.goBack() }]);
     } catch (error: any) {
@@ -197,7 +216,13 @@ export default function SuggestRouteScreen() {
             <ActivityIndicator size="small" color="#000" /><Text style={styles.instructionText}>Calculando rota...</Text>
           </View>
         ) : (
-          <Text style={styles.instructionText}>{!startPoint ? "1. Marque o INÍCIO" : !endPoint ? "2. Marque o FIM" : "3. Rota calculada!"}</Text>
+          <Text style={styles.instructionText}>
+            {!startPoint
+              ? "1. Marque o INÍCIO (cálculo automático de rota real)"
+              : !endPoint
+                ? "2. Marque o FIM para calcular por ruas/trilhas"
+                : "3. Rota real calculada. Revise distância e tempo."}
+          </Text>
         )}
       </View>
 
@@ -209,9 +234,20 @@ export default function SuggestRouteScreen() {
                 <View style={styles.dragIndicator} />
                 <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
                     <Text style={styles.sheetTitle}>Detalhes da Rota</Text>
-                    {distanciaCalculada && (
-                        <View style={styles.distBadge}><Ionicons name="analytics" size={16} color="#000" /><Text style={styles.distText}>{distanciaCalculada}</Text></View>
-                    )}
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      {distanciaCalculada ? (
+                        <View style={styles.distBadge}>
+                          <Ionicons name="analytics" size={16} color="#000" />
+                          <Text style={styles.distText}>{distanciaCalculada}</Text>
+                        </View>
+                      ) : null}
+                      {tempoCalculado ? (
+                        <View style={styles.distBadge}>
+                          <Ionicons name="time-outline" size={16} color="#000" />
+                          <Text style={styles.distText}>{tempoCalculado}</Text>
+                        </View>
+                      ) : null}
+                    </View>
                 </View>
                 
                 <Text style={styles.label}>Nome da Trilha</Text>

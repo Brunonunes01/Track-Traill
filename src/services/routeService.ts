@@ -1,4 +1,5 @@
-import { onValue, ref } from "firebase/database";
+import { User } from "firebase/auth";
+import { onValue, push, ref, set } from "firebase/database";
 import { database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import { TrackTrailRoute } from "../models/alerts";
 
@@ -44,6 +45,15 @@ const normalizeRoute = (id: string, raw: any): TrackTrailRoute => ({
   rotaCompleta: toCoordinates(raw?.rotaCompleta),
 });
 
+type SaveManualRouteInput = {
+  title: string;
+  type: string;
+  difficulty?: string;
+  description?: string;
+  points: { latitude: number; longitude: number }[];
+  distanceKm: number;
+};
+
 export const subscribeOfficialRoutes = (
   onChange: (routes: TrackTrailRoute[]) => void,
   onError?: (message: string) => void
@@ -71,6 +81,34 @@ export const subscribeOfficialRoutes = (
   );
 };
 
+export const subscribeUserRoutes = (
+  userId: string,
+  onChange: (routes: TrackTrailRoute[]) => void,
+  onError?: (message: string) => void
+) => {
+  const routesRef = ref(database, `users/${userId}/rotas_tracadas`);
+
+  return onValue(
+    routesRef,
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onChange([]);
+        return;
+      }
+
+      const raw = snapshot.val();
+      const routes = Object.keys(raw)
+        .map((key) => normalizeRoute(key, raw[key]))
+        .filter((route) => route.startPoint);
+
+      onChange(routes);
+    },
+    (error) => {
+      onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar suas rotas."));
+    }
+  );
+};
+
 export const calculateDistanceKm = (
   fromLat: number,
   fromLon: number,
@@ -88,4 +126,55 @@ export const calculateDistanceKm = (
       Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
+};
+
+export const saveManualRoute = async (input: SaveManualRouteInput, user: User | null) => {
+  if (!user) {
+    throw new Error("Você precisa estar logado para salvar uma rota.");
+  }
+
+  const routeName = input.title?.trim();
+  if (!routeName) {
+    throw new Error("Informe um nome para a rota.");
+  }
+
+  if (!Array.isArray(input.points) || input.points.length < 2) {
+    throw new Error("Defina ao menos dois pontos no mapa.");
+  }
+
+  const normalizedPoints = input.points
+    .map((point) => toCoordinate(point))
+    .filter((point): point is { latitude: number; longitude: number } => Boolean(point));
+
+  if (normalizedPoints.length < 2) {
+    throw new Error("Coordenadas inválidas para salvar a rota.");
+  }
+
+  const startPoint = normalizedPoints[0];
+  const endPoint = normalizedPoints[normalizedPoints.length - 1];
+  const distanceLabel = `${Math.max(input.distanceKm, 0).toFixed(2)} km`;
+  const createdAt = new Date().toISOString();
+
+  const payload = {
+    titulo: routeName,
+    tipo: input.type || "Trilha",
+    dificuldade: input.difficulty || "Média",
+    descricao: input.description?.trim() || "Rota criada manualmente pelo usuário.",
+    distancia: distanceLabel,
+    startPoint,
+    endPoint,
+    rotaCompleta: normalizedPoints,
+    origem: "manual_trace",
+    criadoEm: createdAt,
+    userId: user.uid,
+    userEmail: user.email || null,
+  };
+
+  const userRouteRef = push(ref(database, `users/${user.uid}/rotas_tracadas`));
+  await set(userRouteRef, payload);
+
+  return {
+    id: userRouteRef.key,
+    ...payload,
+  };
 };

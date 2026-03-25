@@ -1,4 +1,19 @@
-export type AlertStatus = "ativo" | "resolvido";
+export type AlertStatus = "ativo" | "resolvido" | "expirado" | "removido";
+
+export type AlertReportReason =
+  | "informacao_falsa"
+  | "duplicado"
+  | "ja_resolvido"
+  | "conteudo_inadequado";
+
+export type AlertReport = {
+  userId: string;
+  reason: AlertReportReason;
+  createdAt: string;
+  createdAtMs: number;
+  userDisplayName?: string | null;
+  userEmail?: string | null;
+};
 
 export type AlertType =
   | "acidente"
@@ -33,12 +48,19 @@ export type TrailAlert = {
   routeName?: string | null;
   createdAt: string;
   createdAtMs: number;
+  expiresAt: string;
+  expiresAtMs: number;
   userId: string;
   userDisplayName?: string | null;
   userEmail?: string | null;
   status: AlertStatus;
   photoUrl?: string | null;
   confirmations: number;
+  reportCount: number;
+  reports?: Record<string, AlertReport>;
+  resolvedAt?: string | null;
+  removedAt?: string | null;
+  removedBy?: string | null;
 };
 
 export const ALERT_TYPE_META: Record<
@@ -89,4 +111,14 @@ export const ALERT_TYPES: AlertType[] = [
   "enchente",
   "pista_escorregadia",
   "outro",
+];
+
+export const ALERT_REPORT_REASONS: {
+  id: AlertReportReason;
+  label: string;
+}[] = [
+  { id: "informacao_falsa", label: "Informação falsa" },
+  { id: "duplicado", label: "Duplicado" },
+  { id: "ja_resolvido", label: "Já resolvido" },
+  { id: "conteudo_inadequado", label: "Conteúdo inadequado" },
 ];

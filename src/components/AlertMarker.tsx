@@ -11,7 +11,13 @@ type AlertMarkerProps = {
 export default function AlertMarker({ alert, selected }: AlertMarkerProps) {
   const meta = ALERT_TYPE_META[alert.type] || ALERT_TYPE_META["outro"];
   const markerColor =
-    alert.status === "resolvido" ? "#4b5563" : meta?.color || "#6b7280";
+    alert.status === "resolvido"
+      ? "#4b5563"
+      : alert.status === "expirado"
+        ? "#b45309"
+        : alert.status === "removido"
+          ? "#6b7280"
+          : meta?.color || "#6b7280";
 
   return (
     <View
