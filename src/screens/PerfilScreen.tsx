@@ -25,6 +25,72 @@ type PerfilScreenProps = {
   navigation?: any;
 };
 
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed.replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const parseClockDurationToSeconds = (value: string): number | null => {
+  const parts = value.split(":").map((part) => Number(part.trim()));
+  if (parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
+
+  if (parts.length === 2) {
+    const [minutes, seconds] = parts;
+    return minutes * 60 + seconds;
+  }
+
+  if (parts.length === 3) {
+    const [hours, minutes, seconds] = parts;
+    return hours * 3600 + minutes * 60 + seconds;
+  }
+
+  return null;
+};
+
+const parseDurationSeconds = (atividade: any): number => {
+  const durationSeconds = toFiniteNumber(atividade?.durationSeconds);
+  if (durationSeconds !== null) return Math.max(0, durationSeconds);
+
+  const duracaoRaw = atividade?.duracao;
+  if (typeof duracaoRaw === "string" && duracaoRaw.includes(":")) {
+    return Math.max(0, parseClockDurationToSeconds(duracaoRaw) || 0);
+  }
+
+  const duracao = toFiniteNumber(duracaoRaw);
+  if (duracao !== null) return Math.max(0, duracao);
+
+  const duration = toFiniteNumber(atividade?.duration);
+  if (duration !== null) return Math.max(0, duration);
+
+  const tempoTotal = toFiniteNumber(atividade?.tempoTotal);
+  if (tempoTotal !== null) return Math.max(0, tempoTotal);
+
+  const minutes = toFiniteNumber(atividade?.minutes);
+  if (minutes !== null) return Math.max(0, minutes * 60);
+
+  const minutos = toFiniteNumber(atividade?.minutos);
+  if (minutos !== null) return Math.max(0, minutos * 60);
+
+  return 0;
+};
+
+const formatDurationLabel = (seconds: number) => {
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const totalMinutes = Math.floor(safeSeconds / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours <= 0) return `${totalMinutes} min`;
+  if (minutes <= 0) return `${hours} h`;
+  return `${hours} h ${minutes} min`;
+};
+
 export default function PerfilScreen(props: PerfilScreenProps) {
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
@@ -38,7 +104,7 @@ export default function PerfilScreen(props: PerfilScreenProps) {
 
   // Estatísticas
   const [totalKm, setTotalKm] = useState(0);
-  const [totalMinutos, setTotalMinutos] = useState(0);
+  const [totalDurationSeconds, setTotalDurationSeconds] = useState(0);
 
   const hookNavigation = useNavigation<any>();
   const navigation = props.navigation || hookNavigation;
@@ -79,21 +145,23 @@ export default function PerfilScreen(props: PerfilScreenProps) {
 
             if (data.atividades) {
               let km = 0;
-              let min = 0;
+              let totalSeconds = 0;
               Object.values(data.atividades).forEach((ativ: any) => {
                 km += Number(ativ.distancia || 0);
-                min += Number(ativ.duracao || 0);
+                totalSeconds += parseDurationSeconds(ativ);
               });
               setTotalKm(km);
-              setTotalMinutos(min);
+              setTotalDurationSeconds(totalSeconds);
             } else {
               setTotalKm(0);
-              setTotalMinutos(0);
+              setTotalDurationSeconds(0);
             }
           } else {
             setFullName('Novo Explorador');
             setUsername('user_' + user.uid.substring(0, 5));
             setRole('user');
+            setTotalKm(0);
+            setTotalDurationSeconds(0);
           }
           setLoading(false);
         }, (error) => {
@@ -232,7 +300,7 @@ export default function PerfilScreen(props: PerfilScreenProps) {
             <View style={styles.divider} />
             <View style={styles.statBox}>
               <Ionicons name="time" size={24} color="#22c55e" />
-              <Text style={styles.statValue}>{totalMinutos} min</Text>
+              <Text style={styles.statValue}>{formatDurationLabel(totalDurationSeconds)}</Text>
               <Text style={styles.statLabel}>de Atividade</Text>
             </View>
           </View>
