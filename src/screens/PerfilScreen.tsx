@@ -305,6 +305,14 @@ export default function PerfilScreen(props: PerfilScreenProps) {
             </View>
           </View>
 
+          <TouchableOpacity
+            style={styles.historyButton}
+            onPress={() => navigation.navigate("History")}
+          >
+            <Ionicons name="time-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
+            <Text style={styles.historyButtonText}>VER HISTÓRICO COMPLETO</Text>
+          </TouchableOpacity>
+
           <View style={styles.formContainer}>
             <View style={styles.formHeader}>
               <Text style={styles.formTitle}>Informações Pessoais</Text>
@@ -394,6 +402,23 @@ const styles = StyleSheet.create({
   },
   shareButtonText: { color: "#d1d5db", fontSize: 12, fontWeight: "700" },
   statsContainer: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, padding: 20, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  historyButton: {
+    backgroundColor: 'rgba(37, 99, 235, 0.85)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#60a5fa',
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    marginBottom: 18,
+  },
+  historyButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.4,
+  },
   statBox: { flex: 1, alignItems: 'center' },
   divider: { width: 1, backgroundColor: 'rgba(255,255,255,0.2)', marginHorizontal: 15 },
   statValue: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginTop: 8 },

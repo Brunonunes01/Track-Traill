@@ -19,11 +19,14 @@ export default function RegisterScreen({ navigation }: any) {
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [birthDate, setBirthDate] = useState("");
+  const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
   const handleRegister = async () => {
-    if (!fullName || !username || !email || !password) {
+    if (!fullName || !username || !email || !password || !birthDate || !phone || !address) {
       setError("Por favor, preencha todos os campos.");
       return;
     }
@@ -52,12 +55,18 @@ export default function RegisterScreen({ navigation }: any) {
         fullName,
         username: normalizedUsername,
         email,
+        birthDate: birthDate.trim(),
+        phone: phone.trim(),
+        address: address.trim(),
       });
 
       setFullName("");
       setUsername("");
       setEmail("");
       setPassword("");
+      setBirthDate("");
+      setPhone("");
+      setAddress("");
       setError("");
 
       navigation.navigate("Login");
@@ -128,6 +137,46 @@ export default function RegisterScreen({ navigation }: any) {
             value={email}
             onChangeText={(text) => {
               setEmail(text);
+              if (error) setError("");
+            }}
+            underlineColorAndroid="transparent"
+            autoCorrect={false}
+          />
+
+          <TextInput
+            style={[styles.input, webInputExtraStyle]}
+            placeholder="Data de nascimento (DD/MM/AAAA)"
+            placeholderTextColor="#CCCCCC"
+            value={birthDate}
+            onChangeText={(text) => {
+              setBirthDate(text);
+              if (error) setError("");
+            }}
+            underlineColorAndroid="transparent"
+            autoCorrect={false}
+          />
+
+          <TextInput
+            style={[styles.input, webInputExtraStyle]}
+            placeholder="Telefone"
+            placeholderTextColor="#CCCCCC"
+            value={phone}
+            onChangeText={(text) => {
+              setPhone(text);
+              if (error) setError("");
+            }}
+            underlineColorAndroid="transparent"
+            keyboardType="phone-pad"
+            autoCorrect={false}
+          />
+
+          <TextInput
+            style={[styles.input, webInputExtraStyle]}
+            placeholder="Endereço"
+            placeholderTextColor="#CCCCCC"
+            value={address}
+            onChangeText={(text) => {
+              setAddress(text);
               if (error) setError("");
             }}
             underlineColorAndroid="transparent"

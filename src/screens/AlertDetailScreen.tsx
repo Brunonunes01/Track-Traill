@@ -208,6 +208,10 @@ export default function AlertDetailScreen(props: AlertDetailScreenProps) {
           </Text>
           <Text style={styles.metaText}>Denúncias: {alertItem.reportCount || 0}</Text>
           <Text style={styles.metaText}>
+            Confiabilidade: {Math.max(0, Math.round(alertItem.confidenceScore || 0))}%
+          </Text>
+          <Text style={styles.metaText}>Risco local: {Math.max(0, Math.round(alertItem.riskScore || 0))}%</Text>
+          <Text style={styles.metaText}>
             Coordenadas: {markerCoordinate ? `${markerCoordinate.latitude.toFixed(5)}, ${markerCoordinate.longitude.toFixed(5)}` : "indisponíveis"}
           </Text>
         </View>

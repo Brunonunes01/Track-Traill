@@ -33,6 +33,16 @@ export type TrackTrailRoute = {
   descricao?: string;
   dificuldade?: string;
   distancia?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  regionKey?: string;
+  regionalLabel?: string;
+  isAmbassadorCurated?: boolean;
+  curatorName?: string;
+  localHighlights?: string[];
+  safetyScore?: number;
+  activeAlertsNearby?: number;
   startPoint?: { latitude: number; longitude: number };
   endPoint?: { latitude: number; longitude: number };
   rotaCompleta?: { latitude: number; longitude: number }[];
@@ -57,6 +67,8 @@ export type TrailAlert = {
   photoUrl?: string | null;
   confirmations: number;
   reportCount: number;
+  confidenceScore?: number;
+  riskScore?: number;
   reports?: Record<string, AlertReport>;
   resolvedAt?: string | null;
   removedAt?: string | null;

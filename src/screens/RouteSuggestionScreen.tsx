@@ -12,13 +12,14 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
-import { TrackTrailRoute } from "../models/alerts";
+import { TrackTrailRoute, TrailAlert } from "../models/alerts";
 import { RouteCard } from "../components/ui";
 import {
   calculateDistanceKm,
   subscribeOfficialRoutes,
   subscribeUserRoutes,
 } from "../services/routeService";
+import { subscribeAlerts } from "../services/alertService";
 import { colors, layout, spacing } from "../theme/designSystem";
 
 type DifficultyFilter = "Todas" | "Fácil" | "Média" | "Difícil";
@@ -27,6 +28,9 @@ type DistanceFilter = 5 | 10 | 20 | 40;
 type SuggestedRoute = TrackTrailRoute & {
   distanceKm?: number;
   score: number;
+  safetyScore: number;
+  activeAlertsNearby: number;
+  regionalMatch: "local" | "br" | "global" | "unknown";
   source: "oficial" | "minha";
 };
 
@@ -35,6 +39,66 @@ const DIFFICULTY_OPTIONS: DifficultyFilter[] = ["Todas", "Fácil", "Média", "Di
 const DISTANCE_OPTIONS: DistanceFilter[] = [5, 10, 20, 40];
 
 const normalizeValue = (value?: string) => (value || "").trim().toLowerCase();
+
+const normalizeRegionToken = (value?: string | null) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+const buildRegionKey = (city?: string, state?: string, country?: string) =>
+  `${normalizeRegionToken(city)}|${normalizeRegionToken(state)}|${normalizeRegionToken(country)}`;
+
+const isBrazil = (country?: string) => {
+  const normalized = normalizeRegionToken(country);
+  return normalized === "brasil" || normalized === "brazil" || normalized === "br";
+};
+
+const getRoutePoints = (route: TrackTrailRoute): { latitude: number; longitude: number }[] => {
+  const sampledPath = (route.rotaCompleta || []).filter((_, index) => index % 5 === 0);
+  const points = [...sampledPath];
+  if (route.startPoint) points.unshift(route.startPoint);
+  if (route.endPoint) points.push(route.endPoint);
+  return points;
+};
+
+const evaluateRouteSafety = (route: TrackTrailRoute, activeAlerts: TrailAlert[]) => {
+  const routePoints = getRoutePoints(route);
+  if (routePoints.length === 0 || activeAlerts.length === 0) {
+    return { safetyScore: 100, activeAlertsNearby: 0 };
+  }
+
+  let hazard = 0;
+  let nearby = 0;
+
+  activeAlerts.forEach((alert) => {
+    let nearestDistanceKm = Number.POSITIVE_INFINITY;
+    routePoints.forEach((point) => {
+      const dist = calculateDistanceKm(
+        point.latitude,
+        point.longitude,
+        alert.latitude,
+        alert.longitude
+      );
+      if (dist < nearestDistanceKm) nearestDistanceKm = dist;
+    });
+
+    let distanceWeight = 0;
+    if (nearestDistanceKm <= 0.15) distanceWeight = 1;
+    else if (nearestDistanceKm <= 0.35) distanceWeight = 0.72;
+    else if (nearestDistanceKm <= 0.6) distanceWeight = 0.46;
+
+    if (distanceWeight > 0) {
+      nearby += 1;
+      const normalizedRisk = Math.max(0, Math.min(100, Number(alert.riskScore || 0))) / 100;
+      hazard += normalizedRisk * distanceWeight * 28;
+    }
+  });
+
+  const safetyScore = Math.round(Math.max(5, Math.min(100, 100 - hazard)));
+  return { safetyScore, activeAlertsNearby: nearby };
+};
 
 export default function RouteSuggestionScreen() {
   const navigation = useNavigation<any>();
@@ -46,8 +110,18 @@ export default function RouteSuggestionScreen() {
   const [selectedType, setSelectedType] = useState("Todos");
   const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyFilter>("Todas");
   const [selectedDistance, setSelectedDistance] = useState<DistanceFilter>(20);
+  const [prioritizeLocalRegion, setPrioritizeLocalRegion] = useState(true);
+  const [curatedOnly, setCuratedOnly] = useState(false);
   const [userLocation, setUserLocation] = useState<Location.LocationObject | null>(null);
+  const [userRegion, setUserRegion] = useState<{
+    city?: string;
+    state?: string;
+    country?: string;
+    key: string;
+  } | null>(null);
+  const [activeAlerts, setActiveAlerts] = useState<TrailAlert[]>([]);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [dataNotice, setDataNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -56,7 +130,10 @@ export default function RouteSuggestionScreen() {
         setOfficialRoutes(routes);
         setLoading(false);
       },
-      () => setLoading(false)
+      (message) => {
+        setLoading(false);
+        setDataNotice(message || null);
+      }
     );
 
     let unsubscribeUserRoutes = () => {};
@@ -64,7 +141,10 @@ export default function RouteSuggestionScreen() {
       unsubscribeUserRoutes = subscribeUserRoutes(
         user.uid,
         (routes) => setUserRoutes(routes),
-        () => setUserRoutes([])
+        (message) => {
+          setUserRoutes([]);
+          if (message) setDataNotice(message);
+        }
       );
     }
 
@@ -73,6 +153,18 @@ export default function RouteSuggestionScreen() {
       unsubscribeUserRoutes();
     };
   }, [user?.uid]);
+
+  useEffect(() => {
+    const unsubscribeAlerts = subscribeAlerts(
+      (alerts) => setActiveAlerts(alerts.filter((item) => item.status === "ativo")),
+      (message) => {
+        setActiveAlerts([]);
+        if (message) setDataNotice(message);
+      }
+    );
+
+    return () => unsubscribeAlerts();
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -92,6 +184,21 @@ export default function RouteSuggestionScreen() {
         if (!mounted) return;
         setUserLocation(current);
         setLocationError(null);
+        const geocoded = await Location.reverseGeocodeAsync({
+          latitude: current.coords.latitude,
+          longitude: current.coords.longitude,
+        });
+        if (!mounted) return;
+        const info = geocoded?.[0];
+        const city = info?.city || info?.subregion || undefined;
+        const state = info?.region || info?.district || undefined;
+        const country = info?.country || "Brasil";
+        setUserRegion({
+          city,
+          state,
+          country,
+          key: buildRegionKey(city, state, country),
+        });
       } catch {
         if (mounted) {
           setLocationError("Não foi possível obter sua localização agora.");
@@ -144,16 +251,48 @@ export default function RouteSuggestionScreen() {
         typeof distanceKm === "number"
           ? Math.max(0.1, 1.8 - Math.min(distanceKm, 60) / 35)
           : 0.8;
+      const { safetyScore, activeAlertsNearby } = evaluateRouteSafety(route, activeAlerts);
+      const safetyMultiplier = 0.65 + safetyScore / 100;
+
+      const routeKey = route.regionKey || buildRegionKey(route.city, route.state, route.country);
+      const routeStateCountryKey = buildRegionKey(undefined, route.state, route.country);
+      const userStateCountryKey = buildRegionKey(undefined, userRegion?.state, userRegion?.country);
+
+      const regionalMatch: SuggestedRoute["regionalMatch"] = !routeKey
+        ? "unknown"
+        : userRegion?.key && routeKey === userRegion.key
+          ? "local"
+          : isBrazil(route.country)
+            ? "br"
+            : "global";
+      const regionalBoost = !prioritizeLocalRegion
+        ? 1
+        : regionalMatch === "local"
+          ? 1.28
+          : routeStateCountryKey && userStateCountryKey && routeStateCountryKey === userStateCountryKey
+            ? 1.16
+            : regionalMatch === "br"
+              ? 1.08
+              : 0.92;
+
+      const curatedBoost = route.isAmbassadorCurated ? 1.2 : 1;
 
       return {
         ...route,
         distanceKm,
-        score: typeScore * difficultyScore * distanceScore,
+        regionalMatch,
+        safetyScore,
+        activeAlertsNearby,
+        score: typeScore * difficultyScore * distanceScore * safetyMultiplier * regionalBoost * curatedBoost,
       };
     });
 
     return allRoutes
       .filter((route) => {
+        if (curatedOnly && !route.isAmbassadorCurated) {
+          return false;
+        }
+
         if (selectedType !== "Todos") {
           const matchesType = normalizeValue(route.tipo).includes(normalizeValue(selectedType));
           if (!matchesType) return false;
@@ -172,9 +311,44 @@ export default function RouteSuggestionScreen() {
 
         return true;
       })
-      .sort((a, b) => b.score - a.score)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (b.safetyScore !== a.safetyScore) return b.safetyScore - a.safetyScore;
+        return a.activeAlertsNearby - b.activeAlertsNearby;
+      })
       .slice(0, 12);
-  }, [officialRoutes, userRoutes, selectedType, selectedDifficulty, selectedDistance, userLocation]);
+  }, [
+    officialRoutes,
+    userRoutes,
+    selectedType,
+    selectedDifficulty,
+    selectedDistance,
+    userLocation,
+    activeAlerts,
+    userRegion,
+    curatedOnly,
+    prioritizeLocalRegion,
+  ]);
+
+  const safetyBriefing = useMemo(() => {
+    if (!suggestedRoutes.length) return null;
+
+    const safestRoute = [...suggestedRoutes].sort((a, b) => {
+      if (b.safetyScore !== a.safetyScore) return b.safetyScore - a.safetyScore;
+      return a.activeAlertsNearby - b.activeAlertsNearby;
+    })[0];
+
+    const highRiskCount = suggestedRoutes.filter((route) => route.safetyScore < 55).length;
+    const avgSafety = Math.round(
+      suggestedRoutes.reduce((sum, route) => sum + route.safetyScore, 0) / suggestedRoutes.length
+    );
+
+    return {
+      safestRoute,
+      highRiskCount,
+      avgSafety,
+    };
+  }, [suggestedRoutes]);
 
   return (
     <View style={styles.container}>
@@ -184,14 +358,48 @@ export default function RouteSuggestionScreen() {
         </TouchableOpacity>
         <View style={styles.headerTextWrap}>
           <Text style={styles.title}>Sugerir rota</Text>
-          <Text style={styles.subtitle}>Recomendações por proximidade e perfil</Text>
+          <Text style={styles.subtitle}>Recomendações por perfil, segurança e região</Text>
         </View>
       </View>
+
+      {userRegion ? (
+        <View style={styles.regionInfoBox}>
+          <Ionicons name="location-outline" size={14} color={colors.info} />
+          <Text style={styles.regionInfoText}>
+            Região detectada: {[userRegion.city, userRegion.state].filter(Boolean).join(" - ") || userRegion.country}
+          </Text>
+        </View>
+      ) : null}
 
       {locationError ? (
         <View style={styles.warningBox}>
           <Ionicons name="locate-outline" size={15} color={colors.warning} />
           <Text style={styles.warningText}>{locationError}</Text>
+        </View>
+      ) : null}
+
+      {dataNotice ? (
+        <View style={styles.noticeBox}>
+          <Ionicons name="cloud-offline-outline" size={15} color={colors.textSecondary} />
+          <Text style={styles.noticeText}>{dataNotice}</Text>
+        </View>
+      ) : null}
+
+      {safetyBriefing ? (
+        <View style={styles.briefingCard}>
+          <View style={styles.briefingTop}>
+            <Ionicons name="shield-checkmark-outline" size={15} color={colors.success} />
+            <Text style={styles.briefingTitle}>Briefing de segurança</Text>
+          </View>
+          <Text style={styles.briefingText}>
+            Segurança média das rotas filtradas: {safetyBriefing.avgSafety}%
+          </Text>
+          <Text style={styles.briefingText}>
+            Rota mais segura agora: {safetyBriefing.safestRoute.titulo} ({safetyBriefing.safestRoute.safetyScore}%)
+          </Text>
+          <Text style={styles.briefingText}>
+            Rotas críticas no filtro: {safetyBriefing.highRiskCount}
+          </Text>
         </View>
       ) : null}
 
@@ -235,6 +443,27 @@ export default function RouteSuggestionScreen() {
         </ScrollView>
       </View>
 
+      <View style={styles.inlineFiltersRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.inlineScroll}>
+          <TouchableOpacity
+            onPress={() => setPrioritizeLocalRegion((prev) => !prev)}
+            style={[styles.inlineChip, prioritizeLocalRegion ? styles.inlineChipActive : null]}
+          >
+            <Text style={[styles.inlineText, prioritizeLocalRegion ? styles.inlineTextActive : null]}>
+              Priorizar minha região
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setCuratedOnly((prev) => !prev)}
+            style={[styles.inlineChip, curatedOnly ? styles.inlineChipActive : null]}
+          >
+            <Text style={[styles.inlineText, curatedOnly ? styles.inlineTextActive : null]}>
+              Só curadoria local
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+
       {loading ? (
         <View style={styles.loadingWrap}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -253,11 +482,14 @@ export default function RouteSuggestionScreen() {
                 <RouteCard
                   route={{
                     ...route,
+                    safetyScore: route.safetyScore,
+                    activeAlertsNearby: route.activeAlertsNearby,
                     distancia:
                       typeof route.distanceKm === "number"
                         ? `${route.distanceKm.toFixed(1)} km de você`
                         : route.distancia,
                   }}
+                  activeAlerts={route.activeAlertsNearby}
                   onPress={() => navigation.navigate("RouteDetail", { routeData: route })}
                 />
                 <View style={styles.sourceRow}>
@@ -268,6 +500,9 @@ export default function RouteSuggestionScreen() {
                   />
                   <Text style={styles.sourceText}>
                     {route.source === "oficial" ? "Rota oficial" : "Rota traçada por você"}
+                  </Text>
+                  <Text style={styles.sourceText}>
+                    • {route.regionalMatch === "local" ? "Região local" : route.regionalMatch === "br" ? "Brasil" : route.regionalMatch === "unknown" ? "Região não informada" : "Internacional"}
                   </Text>
                 </View>
               </View>
@@ -319,6 +554,24 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 1,
   },
+  regionInfoBox: {
+    marginBottom: spacing.xs,
+    backgroundColor: "rgba(56, 189, 248, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.35)",
+    borderRadius: 12,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    flexDirection: "row",
+    gap: spacing.xs,
+    alignItems: "center",
+  },
+  regionInfoText: {
+    color: colors.info,
+    fontSize: 12,
+    flex: 1,
+    fontWeight: "700",
+  },
   warningBox: {
     marginBottom: spacing.xs,
     backgroundColor: "rgba(245, 158, 11, 0.12)",
@@ -335,6 +588,47 @@ const styles = StyleSheet.create({
     color: colors.warning,
     fontSize: 12,
     flex: 1,
+  },
+  noticeBox: {
+    marginBottom: spacing.xs,
+    backgroundColor: "rgba(148, 163, 184, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.38)",
+    borderRadius: 12,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    flexDirection: "row",
+    gap: spacing.xs,
+    alignItems: "center",
+  },
+  noticeText: {
+    color: colors.textSecondary,
+    fontSize: 12,
+    flex: 1,
+  },
+  briefingCard: {
+    marginBottom: spacing.sm,
+    backgroundColor: "rgba(34, 197, 94, 0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.35)",
+    borderRadius: 12,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    gap: 4,
+  },
+  briefingTop: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  briefingTitle: {
+    color: colors.success,
+    fontSize: 13,
+    fontWeight: "800",
+  },
+  briefingText: {
+    color: "#d1fae5",
+    fontSize: 12,
   },
   filterRow: {
     gap: spacing.xs,

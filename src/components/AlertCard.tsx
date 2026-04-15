@@ -30,6 +30,8 @@ export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
           ? "#f59e0b"
           : "#9ca3af";
   const expirationLabel = formatDate(alert.expiresAt);
+  const confidence = Math.max(0, Math.min(100, Math.round(alert.confidenceScore || 0)));
+  const risk = Math.max(0, Math.min(100, Math.round(alert.riskScore || 0)));
 
   return (
     <TouchableOpacity
@@ -59,6 +61,7 @@ export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
         <View>
           <Text style={styles.dateText}>Criado: {formatDate(alert.createdAt)}</Text>
           <Text style={styles.expireText}>Expira: {expirationLabel}</Text>
+          <Text style={styles.confidenceText}>Confiabilidade: {confidence}%</Text>
         </View>
         <View style={styles.metaRight}>
           <View style={styles.confirmRow}>
@@ -68,6 +71,10 @@ export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
           <View style={styles.confirmRow}>
             <Ionicons name="flag-outline" size={14} color="#f59e0b" />
             <Text style={styles.confirmText}>{alert.reportCount || 0}</Text>
+          </View>
+          <View style={styles.confirmRow}>
+            <Ionicons name="pulse-outline" size={14} color="#f87171" />
+            <Text style={styles.confirmText}>Risco: {risk}%</Text>
           </View>
         </View>
       </View>
@@ -144,6 +151,12 @@ const styles = StyleSheet.create({
     color: "#6b7280",
     fontSize: 11,
     marginTop: 2,
+  },
+  confidenceText: {
+    color: "#93c5fd",
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: "700",
   },
   metaRight: {
     alignItems: "flex-end",

@@ -32,6 +32,7 @@ function SideMenu({ visible, onClose }: { visible: boolean; onClose: () => void 
   const menuItems = useMemo(
     () => [
       { key: "perfil", label: "Perfil", icon: "person-circle-outline", href: "/(tabs)/perfil" },
+      { key: "historico", label: "Histórico", icon: "time-outline", href: "/history" },
       { key: "amigos", label: "Amigos", icon: "people-outline", href: "/friends" },
       { key: "rotas", label: "Minhas rotas", icon: "trail-sign-outline", href: "/(tabs)/proximas" },
       { key: "alertas", label: "Alertas", icon: "warning-outline", href: "/alert-form" },

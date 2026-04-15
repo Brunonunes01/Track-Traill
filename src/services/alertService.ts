@@ -21,6 +21,7 @@ import {
   TrailAlert,
 } from "../models/alerts";
 import { calculateDistanceKm } from "./routeService";
+import { loadOfflineCache, saveOfflineCache } from "../storage/offlineCache";
 
 type CreateAlertInput = {
   type: AlertType;
@@ -43,6 +44,18 @@ const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
 const AUTO_REMOVE_REPORT_THRESHOLD = 5;
 const alertsRef = ref(database, "alerts");
 const attemptedExpireSync = new Set<string>();
+const OFFLINE_CACHE_ALERTS_KEY = "alerts";
+const ALERT_SEVERITY_WEIGHT: Record<AlertType, number> = {
+  acidente: 1,
+  assalto_risco: 1,
+  animal_perigoso: 0.88,
+  trilha_bloqueada: 0.8,
+  enchente: 0.85,
+  queda_arvore: 0.72,
+  pista_escorregadia: 0.64,
+  lama: 0.58,
+  outro: 0.5,
+};
 
 const isKnownStatus = (value: unknown): value is AlertStatus =>
   value === "ativo" || value === "resolvido" || value === "expirado" || value === "removido";
@@ -155,12 +168,26 @@ const normalizeAlert = (
     typeof raw?.reportCount === "number" && raw.reportCount >= 0
       ? Math.floor(raw.reportCount)
       : Object.keys(reports).length;
+  const type = (raw?.type || "outro") as AlertType;
+  const ageHours = Math.max(0, (now - createdAtMs) / (60 * 60 * 1000));
+  const recencyScore = Math.max(0.2, 1 - Math.min(ageHours, 24) / 28);
+  const communitySignal = Math.max(
+    0,
+    Math.min(1.25, 0.55 + Number(raw?.confirmations || 0) * 0.08 - reportCount * 0.11)
+  );
+  const statusMultiplier =
+    status === "ativo" ? 1 : status === "resolvido" ? 0.45 : status === "expirado" ? 0.35 : 0.2;
+  const confidenceScore = Math.round(
+    Math.max(8, Math.min(100, recencyScore * communitySignal * statusMultiplier * 100))
+  );
+  const baseSeverity = ALERT_SEVERITY_WEIGHT[type] || ALERT_SEVERITY_WEIGHT.outro;
+  const riskScore = Math.round(Math.max(4, Math.min(100, baseSeverity * confidenceScore)));
 
   return {
     shouldPersistExpiration,
     alert: {
       id,
-      type: (raw?.type || "outro") as AlertType,
+      type,
       description: String(raw?.description || "Sem descrição."),
       latitude,
       longitude,
@@ -177,6 +204,8 @@ const normalizeAlert = (
       photoUrl: raw?.photoUrl || null,
       confirmations: Number(raw?.confirmations || 0),
       reportCount,
+      confidenceScore,
+      riskScore,
       reports,
       resolvedAt: typeof raw?.resolvedAt === "string" ? raw.resolvedAt : null,
       removedAt: typeof raw?.removedAt === "string" ? raw.removedAt : null,
@@ -288,7 +317,7 @@ export const subscribeAlerts = (
       const now = Date.now();
       const toExpireIds: string[] = [];
 
-      const alerts = Object.keys(data)
+      const normalizedAlerts = Object.keys(data)
         .map((id) => {
           const normalized = normalizeAlert(id, data[id], now);
           if (normalized.shouldPersistExpiration) {
@@ -296,17 +325,29 @@ export const subscribeAlerts = (
           }
           return normalized.alert;
         })
-        .filter((item): item is TrailAlert => Boolean(item))
+        .filter((item): item is TrailAlert => Boolean(item));
+
+      const alerts = normalizedAlerts
         .filter((item) => shouldIncludeAlert(item, options))
         .sort((a, b) => b.createdAtMs - a.createdAtMs);
 
       onChange(alerts);
+      saveOfflineCache(OFFLINE_CACHE_ALERTS_KEY, normalizedAlerts);
 
       if (toExpireIds.length > 0) {
         syncExpiredAlertsInBackground(toExpireIds);
       }
     },
-    (error) => {
+    async (error) => {
+      const fallback = await loadOfflineCache<TrailAlert[]>(OFFLINE_CACHE_ALERTS_KEY);
+      if (fallback?.data?.length) {
+        const cachedAlerts = fallback.data
+          .filter((item) => shouldIncludeAlert(item, options))
+          .sort((a, b) => b.createdAtMs - a.createdAtMs);
+        onChange(cachedAlerts);
+        onError?.("Sem conexão com o servidor. Exibindo alertas em cache offline.");
+        return;
+      }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar alertas."));
     }
   );

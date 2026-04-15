@@ -1,5 +1,9 @@
 import { Ionicons } from "@expo/vector-icons";
-import { onAuthStateChanged, signInWithEmailAndPassword } from "firebase/auth";
+import {
+  onAuthStateChanged,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+} from "firebase/auth";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
@@ -40,6 +44,7 @@ export default function LoginScreen({ navigation }: any) {
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
   const hasNavigatedRef = useRef(false);
 
   // 🔹 Controle da animação de foco
@@ -176,6 +181,42 @@ export default function LoginScreen({ navigation }: any) {
     }
   };
 
+  const handleForgotPassword = async () => {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail) {
+      setError("Digite seu e-mail para redefinir a senha.");
+      return;
+    }
+
+    if (isResettingPassword) return;
+
+    setIsResettingPassword(true);
+    setError("");
+
+    try {
+      await sendPasswordResetEmail(auth, normalizedEmail);
+      Alert.alert(
+        "E-mail enviado",
+        "Enviamos um link para redefinição de senha. Verifique sua caixa de entrada."
+      );
+    } catch (err: any) {
+      if (err?.code === "auth/invalid-email") {
+        setError("E-mail inválido.");
+      } else {
+        setError("Não foi possível enviar o e-mail de redefinição.");
+      }
+    } finally {
+      setIsResettingPassword(false);
+    }
+  };
+
+  const handleSocialLoginPress = (providerName: string) => {
+    Alert.alert(
+      "Login social",
+      `${providerName} ainda não está configurado neste ambiente. Use e-mail e senha por enquanto.`
+    );
+  };
+
   // 🔹 Estilo adicional apenas para Web (remove outline)
   const webInputStyle = Platform.OS === "web" ? { outlineWidth: 0 } : {};
 
@@ -300,6 +341,40 @@ export default function LoginScreen({ navigation }: any) {
             >
               <Text style={styles.primaryButtonText}>{isSubmitting ? "ENTRANDO..." : "ENTRAR"}</Text>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.forgotPasswordButton}
+              onPress={handleForgotPassword}
+              disabled={isResettingPassword}
+            >
+              <Text style={styles.forgotPasswordText}>
+                {isResettingPassword ? "ENVIANDO..." : "Esqueceu sua senha?"}
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.socialSection}>
+              <Text style={styles.socialLabel}>Ou entre com</Text>
+              <View style={styles.socialButtonsRow}>
+                <TouchableOpacity
+                  style={styles.socialButton}
+                  onPress={() => handleSocialLoginPress("Facebook")}
+                >
+                  <Ionicons name="logo-facebook" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.socialButton}
+                  onPress={() => handleSocialLoginPress("Instagram")}
+                >
+                  <Ionicons name="logo-instagram" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.socialButton}
+                  onPress={() => handleSocialLoginPress("X")}
+                >
+                  <Ionicons name="logo-twitter" size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            </View>
 
             <TouchableOpacity
   style={{ marginTop: 20 }}   // aumenta a distância do botão de entrar
@@ -430,6 +505,38 @@ const styles = StyleSheet.create({
     color: "#FFFFFF",
     fontSize: 16,
     fontWeight: "bold",
+  },
+  forgotPasswordButton: {
+    marginTop: 12,
+  },
+  forgotPasswordText: {
+    color: "#dbeafe",
+    fontSize: 13,
+    textDecorationLine: "underline",
+  },
+  socialSection: {
+    marginTop: 18,
+    alignItems: "center",
+  },
+  socialLabel: {
+    color: "#e5e7eb",
+    fontSize: 13,
+    marginBottom: 10,
+  },
+  socialButtonsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  socialButton: {
+    width: 40,
+    height: 40,
+    marginHorizontal: 5,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: "#9ca3af",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
   },
   secondaryButton: { marginTop: 20 },
   secondaryButtonText: {

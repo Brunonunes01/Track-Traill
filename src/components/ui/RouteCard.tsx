@@ -13,6 +13,10 @@ type RouteCardProps = {
 
 export default function RouteCard({ route, activeAlerts = 0, onPress }: RouteCardProps) {
   const danger = activeAlerts > 0;
+  const safetyScore = Math.max(0, Math.min(100, Math.round(route.safetyScore ?? 0)));
+  const safetyColor =
+    safetyScore >= 75 ? colors.success : safetyScore >= 50 ? colors.warning : colors.danger;
+  const alertsCount = route.activeAlertsNearby ?? activeAlerts;
 
   return (
     <TouchableOpacity activeOpacity={0.86} onPress={onPress}>
@@ -29,6 +33,23 @@ export default function RouteCard({ route, activeAlerts = 0, onPress }: RouteCar
         <Text style={styles.description} numberOfLines={2}>
           {route.descricao || "Sem descrição disponível."}
         </Text>
+
+        <View style={styles.badgesRow}>
+          {route.regionalLabel ? (
+            <View style={styles.regionBadge}>
+              <Ionicons name="location-outline" size={12} color={colors.info} />
+              <Text style={styles.regionBadgeText}>{route.regionalLabel}</Text>
+            </View>
+          ) : null}
+          {route.isAmbassadorCurated ? (
+            <View style={styles.curatedBadge}>
+              <Ionicons name="ribbon-outline" size={12} color={colors.success} />
+              <Text style={styles.curatedBadgeText}>
+                Curadoria local{route.curatorName ? ` • ${route.curatorName}` : ""}
+              </Text>
+            </View>
+          ) : null}
+        </View>
 
         <View style={styles.metaRow}>
           <View style={styles.metaItem}>
@@ -48,7 +69,14 @@ export default function RouteCard({ route, activeAlerts = 0, onPress }: RouteCar
               color={danger ? colors.danger : colors.success}
             />
             <Text style={[styles.metaText, { color: danger ? colors.danger : colors.success }]}> 
-              {activeAlerts} alerta(s)
+              {alertsCount} alerta(s)
+            </Text>
+          </View>
+
+          <View style={styles.metaItem}>
+            <Ionicons name="shield-half-outline" size={14} color={safetyColor} />
+            <Text style={[styles.metaText, { color: safetyColor }]}>
+              Segurança {safetyScore}%
             </Text>
           </View>
         </View>
@@ -88,6 +116,45 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: spacing.xs,
     lineHeight: 20,
+  },
+  badgesRow: {
+    marginTop: spacing.xs,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  regionBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xxs,
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.45)",
+    backgroundColor: "rgba(56, 189, 248, 0.1)",
+    borderRadius: radius.round,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  regionBadgeText: {
+    color: colors.info,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  curatedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xxs,
+    borderWidth: 1,
+    borderColor: "rgba(34, 197, 94, 0.45)",
+    backgroundColor: "rgba(34, 197, 94, 0.1)",
+    borderRadius: radius.round,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs,
+  },
+  curatedBadgeText: {
+    color: colors.success,
+    fontSize: 11,
+    fontWeight: "700",
   },
   metaRow: {
     marginTop: spacing.sm,

@@ -12,6 +12,9 @@ type RegisterProfileInput = {
   fullName: string;
   username: string;
   email: string;
+  birthDate?: string;
+  phone?: string;
+  address?: string;
 };
 
 type UpdateProfileInput = {
@@ -171,6 +174,9 @@ export const registerUserProfile = async (input: RegisterProfileInput) => {
     fullName: input.fullName.trim(),
     username: normalized,
     email: input.email,
+    birthDate: input.birthDate?.trim() || "",
+    phone: input.phone?.trim() || "",
+    address: input.address?.trim() || "",
     role: "user",
     createdAt: new Date().toISOString(),
   });

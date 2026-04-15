@@ -16,6 +16,8 @@ const routeMap: Record<string, string> = {
   AlertDetail: "/alert-detail",
   ActivitySummary: "/activity-summary",
   ActivityView: "/activity-view",
+  History: "/history",
+  Historico: "/history",
   Configuracoes: "/configuracoes",
   Ajuda: "/ajuda",
   Admin: "/admin",

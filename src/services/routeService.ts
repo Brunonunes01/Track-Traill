@@ -2,6 +2,10 @@ import { User } from "firebase/auth";
 import { onValue, push, ref, set } from "firebase/database";
 import { database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import { TrackTrailRoute } from "../models/alerts";
+import { loadOfflineCache, saveOfflineCache } from "../storage/offlineCache";
+
+const OFFLINE_CACHE_OFFICIAL_ROUTES_KEY = "official_routes";
+const OFFLINE_CACHE_USER_ROUTES_PREFIX = "user_routes:";
 
 const toNumber = (value: unknown): number | null => {
   if (typeof value === "number") return value;
@@ -33,17 +37,74 @@ const toCoordinates = (value: any): { latitude: number; longitude: number }[] =>
     .filter((item): item is { latitude: number; longitude: number } => Boolean(item));
 };
 
-const normalizeRoute = (id: string, raw: any): TrackTrailRoute => ({
-  id,
-  titulo: String(raw?.titulo || raw?.nome || "Rota sem nome"),
-  tipo: String(raw?.tipo || "Trilha"),
-  descricao: raw?.descricao ? String(raw.descricao) : "Sem descrição disponível.",
-  dificuldade: raw?.dificuldade ? String(raw.dificuldade) : "Não informada",
-  distancia: raw?.distancia ? String(raw.distancia) : undefined,
-  startPoint: toCoordinate(raw?.startPoint),
-  endPoint: toCoordinate(raw?.endPoint),
-  rotaCompleta: toCoordinates(raw?.rotaCompleta),
-});
+const normalizeRegionToken = (value?: string | null) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+const buildRegionKey = (city?: string, state?: string, country?: string) => {
+  const normalizedCity = normalizeRegionToken(city);
+  const normalizedState = normalizeRegionToken(state);
+  const normalizedCountry = normalizeRegionToken(country);
+  if (!normalizedState && !normalizedCountry) return "";
+  return `${normalizedCity}|${normalizedState}|${normalizedCountry}`;
+};
+
+const toStringSafe = (value: unknown): string | undefined => {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return undefined;
+};
+
+const toBooleanSafe = (value: unknown): boolean | undefined => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true" || normalized === "sim" || normalized === "1") return true;
+    if (normalized === "false" || normalized === "nao" || normalized === "não" || normalized === "0") {
+      return false;
+    }
+  }
+  return undefined;
+};
+
+const toStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => toStringSafe(item))
+    .filter((item): item is string => Boolean(item));
+};
+
+const normalizeRoute = (id: string, raw: any): TrackTrailRoute => {
+  const city = toStringSafe(raw?.city || raw?.cidade);
+  const state = toStringSafe(raw?.state || raw?.estado || raw?.uf);
+  const country = toStringSafe(raw?.country || raw?.pais || raw?.país || "Brasil");
+  const normalizedRegionKey = toStringSafe(raw?.regionKey) || buildRegionKey(city, state, country);
+  const regionalLabel = [city, state].filter(Boolean).join(" - ") || state || country;
+  const isAmbassadorCurated =
+    toBooleanSafe(raw?.isAmbassadorCurated ?? raw?.curadoriaLocal ?? raw?.rotaEmbaixador) || false;
+
+  return {
+    id,
+    titulo: String(raw?.titulo || raw?.nome || "Rota sem nome"),
+    tipo: String(raw?.tipo || "Trilha"),
+    descricao: raw?.descricao ? String(raw.descricao) : "Sem descrição disponível.",
+    dificuldade: raw?.dificuldade ? String(raw.dificuldade) : "Não informada",
+    distancia: raw?.distancia ? String(raw.distancia) : undefined,
+    city,
+    state,
+    country,
+    regionKey: normalizedRegionKey || undefined,
+    regionalLabel: regionalLabel || undefined,
+    isAmbassadorCurated,
+    curatorName: toStringSafe(raw?.curatorName || raw?.curador),
+    localHighlights: toStringArray(raw?.localHighlights || raw?.destaquesLocais),
+    startPoint: toCoordinate(raw?.startPoint),
+    endPoint: toCoordinate(raw?.endPoint),
+    rotaCompleta: toCoordinates(raw?.rotaCompleta),
+  };
+};
 
 type SaveManualRouteInput = {
   title: string;
@@ -74,8 +135,15 @@ export const subscribeOfficialRoutes = (
         .filter((route) => route.startPoint);
 
       onChange(routes);
+      saveOfflineCache(OFFLINE_CACHE_OFFICIAL_ROUTES_KEY, routes);
     },
-    (error) => {
+    async (error) => {
+      const fallback = await loadOfflineCache<TrackTrailRoute[]>(OFFLINE_CACHE_OFFICIAL_ROUTES_KEY);
+      if (fallback?.data?.length) {
+        onChange(fallback.data);
+        onError?.("Sem conexão com o servidor. Exibindo rotas oficiais em cache offline.");
+        return;
+      }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar rotas."));
     }
   );
@@ -102,8 +170,17 @@ export const subscribeUserRoutes = (
         .filter((route) => route.startPoint);
 
       onChange(routes);
+      saveOfflineCache(`${OFFLINE_CACHE_USER_ROUTES_PREFIX}${userId}`, routes);
     },
-    (error) => {
+    async (error) => {
+      const fallback = await loadOfflineCache<TrackTrailRoute[]>(
+        `${OFFLINE_CACHE_USER_ROUTES_PREFIX}${userId}`
+      );
+      if (fallback?.data?.length) {
+        onChange(fallback.data);
+        onError?.("Sem conexão com o servidor. Exibindo suas rotas salvas em cache offline.");
+        return;
+      }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar suas rotas."));
     }
   );
@@ -166,6 +243,7 @@ export const saveManualRoute = async (input: SaveManualRouteInput, user: User | 
     rotaCompleta: normalizedPoints,
     origem: "manual_trace",
     criadoEm: createdAt,
+    country: "Brasil",
     userId: user.uid,
     userEmail: user.email || null,
   };
