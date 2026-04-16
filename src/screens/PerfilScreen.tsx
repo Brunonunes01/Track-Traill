@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Clipboard from "expo-clipboard";
@@ -17,6 +18,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, database } from '../../services/connectionFirebase';
 import { ensureUserRole, resolveUserRole } from '../../services/adminService';
 import { ensureUserProfileCompatibility, updatePublicProfile } from "../services/userService";
@@ -92,6 +94,8 @@ const formatDurationLabel = (seconds: number) => {
 };
 
 export default function PerfilScreen(props: PerfilScreenProps) {
+  const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   
@@ -269,7 +273,12 @@ export default function PerfilScreen(props: PerfilScreenProps) {
           </TouchableOpacity>
         </View>
 
-        <ScrollView contentContainerStyle={styles.scrollContent}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: Math.max(tabBarHeight + insets.bottom + 20, 40) },
+          ]}
+        >
           
           <View style={styles.avatarContainer}>
             <View style={styles.avatarCircle}>

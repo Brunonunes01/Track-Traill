@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { onValue, ref } from "firebase/database";
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import {
   ActivityIndicator,
   Animated,
@@ -45,6 +46,7 @@ const getGreeting = () => {
 
 export default function SimpleHomeScreen({ navigation }: any) {
   const insets = useSafeAreaInsets();
+  const tabBarHeight = useBottomTabBarHeight();
 
   const [fullName, setFullName] = useState("Explorador");
   const [routesCount, setRoutesCount] = useState(0);
@@ -199,7 +201,7 @@ export default function SimpleHomeScreen({ navigation }: any) {
           styles.content,
           {
             paddingTop: spacing.lg,
-            paddingBottom: Math.max(insets.bottom + spacing.lg, spacing.xxl),
+            paddingBottom: Math.max(tabBarHeight + insets.bottom + spacing.lg, spacing.xxl),
           },
         ]}
         showsVerticalScrollIndicator={false}

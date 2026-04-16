@@ -11,12 +11,13 @@ import Animated, {
   withSpring,
   withTiming,
 } from "react-native-reanimated";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
 import { formatPace, calculatePace } from "../utils/activityMetrics";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
-const MIN_PANEL_HEIGHT = 200;
+const MIN_PANEL_HEIGHT = 320;
 const MAX_PANEL_HEIGHT = SCREEN_HEIGHT * 0.8;
 
 interface MapTrackerProps {
@@ -108,6 +109,13 @@ const TrackerMapView = memo(function TrackerMapView({
 
 export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
   const insets = useSafeAreaInsets();
+  let tabBarHeight = 0;
+  try {
+    tabBarHeight = useBottomTabBarHeight();
+  } catch (e) {
+    // Tab bar not present
+  }
+
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
   const [currentLocation, setCurrentLocation] = useState<Coordinate | null>(null);
   const [distance, setDistance] = useState(0);
@@ -231,7 +239,7 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
       <Animated.View style={[StyleSheet.absoluteFill, styles.darkOverlay, animatedOverlayStyle]} pointerEvents="none" />
 
       <PanGestureHandler onGestureEvent={gestureHandler}>
-        <Animated.View style={[styles.panel, animatedPanelStyle, { paddingBottom: insets.bottom + 20 }]}>
+        <Animated.View style={[styles.panel, animatedPanelStyle, { paddingBottom: insets.bottom + tabBarHeight + 40 }]}>
           <View style={styles.dragHandle} />
           
           <View style={styles.hudHeader}>

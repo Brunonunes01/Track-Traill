@@ -404,8 +404,8 @@ export default function HomeScreen({ navigation }: any) {
 
   const loading = loadingRoutes || loadingAlerts;
   const tabSafeOffset = Math.max(insets.bottom, 12);
-  // Reduzido para respeitar a margem já que a Tab Bar está escondida na tela de Mapa
-  const floatingBottomBase = tabSafeOffset + 8; 
+  // Aumentado para subir mais os botões flutuantes
+  const floatingBottomBase = tabSafeOffset + 38; 
   const handleOpenDrawer = () => {
     const parent = navigation.getParent?.();
     if (parent?.openDrawer) {
@@ -622,7 +622,7 @@ export default function HomeScreen({ navigation }: any) {
           styles.fabRoute,
           selectedRoute || selectedAlert
             ? { bottom: floatingBottomBase + 206 }
-            : { bottom: floatingBottomBase + 60 },
+            : { bottom: floatingBottomBase + 130 },
         ]}
         onPress={() => setRouteActionVisible((current) => !current)}
       >
@@ -635,7 +635,7 @@ export default function HomeScreen({ navigation }: any) {
           styles.fabPrimary,
           selectedRoute || selectedAlert
             ? { bottom: floatingBottomBase + 145 }
-            : { bottom: floatingBottomBase },
+            : { bottom: floatingBottomBase + 70 },
         ]}
         onPress={handleRegisterAlert}
       >
@@ -648,7 +648,7 @@ export default function HomeScreen({ navigation }: any) {
           styles.fabSecondary,
           selectedRoute || selectedAlert
             ? { bottom: floatingBottomBase + 84 }
-            : { bottom: tabSafeOffset + 8 },
+            : { bottom: floatingBottomBase },
         ]}
         onPress={() => navigation.navigate("Próximas")}
       >

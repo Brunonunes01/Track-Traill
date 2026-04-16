@@ -1,23 +1,25 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import React from "react";
-import { Platform, StyleSheet, View } from "react-native";
+import { StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DrawerToggleButton } from "@react-navigation/drawer";
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
+  const tabBarBottomPadding = Math.max(insets.bottom, 8);
+  const tabBarHeight = 64 + insets.bottom;
 
   return (
     <Tabs
       screenOptions={{
         headerShown: true,
-        headerStyle: { 
+        headerStyle: {
           backgroundColor: "#0b1220",
           elevation: 0,
           shadowOpacity: 0,
           borderBottomWidth: 1,
-          borderBottomColor: "#1f2937"
+          borderBottomColor: "#1f2937",
         },
         headerTintColor: "#f8fafc",
         headerTitleStyle: { fontWeight: "800", fontSize: 17 },
@@ -25,9 +27,9 @@ export default function TabsLayout() {
           backgroundColor: "#0b1220",
           borderTopWidth: 1,
           borderTopColor: "#1f2937",
-          height: Platform.OS === "ios" ? 88 : 64,
-          paddingBottom: Platform.OS === "ios" ? 28 : 10,
-          paddingTop: 10,
+          height: tabBarHeight,
+          paddingBottom: tabBarBottomPadding,
+          paddingTop: 8,
         },
         tabBarActiveTintColor: "#f97316",
         tabBarInactiveTintColor: "#94a3b8",

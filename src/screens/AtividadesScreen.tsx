@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import * as Location from "expo-location";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -370,6 +371,13 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
     }
   };
 
+  let tabBarHeight = 0;
+  try {
+    tabBarHeight = useBottomTabBarHeight();
+  } catch (e) {
+    // Tab bar not present
+  }
+
   if (loadingSession) {
     return (
       <View style={styles.loadingContainer}>
@@ -472,7 +480,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
           </View>
         </ScrollView>
 
-        <View style={[styles.actionsDock, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+        <View style={[styles.actionsDock, { paddingBottom: Math.max(insets.bottom + tabBarHeight + 20, 36) }]}>
           {!hasActiveSession ? (
             <Pressable style={({ pressed }) => [styles.mainActionButton, styles.startAction, pressed ? styles.buttonPressed : null]} onPress={handleStart}>
               <Ionicons name="play" size={22} color="#fff" />

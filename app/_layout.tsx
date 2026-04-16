@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Drawer } from "expo-router/drawer";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { signOut } from "firebase/auth";
 import AppErrorBoundary from "../src/components/AppErrorBoundary";
 import { useColorScheme } from "@/hooks/useColorScheme";
@@ -105,40 +105,42 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <AppErrorBoundary>
-      <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-        <Drawer
-          drawerContent={(props) => <CustomDrawerContent {...props} />}
-          screenOptions={{
-            headerShown: false,
-            drawerStyle: {
-              backgroundColor: "#0b1220",
-              width: 280,
-            },
-            overlayColor: "rgba(2,6,23,0.7)",
-          }}
-        >
-          <Drawer.Screen 
-            name="(tabs)" 
-            options={{ 
-              drawerLabel: "Principal",
-              headerShown: false 
-            }} 
-          />
-          <Drawer.Screen 
-            name="history" 
-            options={{ 
-              drawerLabel: "Histórico",
-              headerShown: true,
-              title: "Meu Histórico",
-              headerStyle: { backgroundColor: "#0b1220" },
-              headerTintColor: "#fff"
-            }} 
-          />
-        </Drawer>
-        <StatusBar style="auto" />
-      </ThemeProvider>
-    </AppErrorBoundary>
+    <SafeAreaProvider>
+      <AppErrorBoundary>
+        <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+          <Drawer
+            drawerContent={(props) => <CustomDrawerContent {...props} />}
+            screenOptions={{
+              headerShown: false,
+              drawerStyle: {
+                backgroundColor: "#0b1220",
+                width: 280,
+              },
+              overlayColor: "rgba(2,6,23,0.7)",
+            }}
+          >
+            <Drawer.Screen 
+              name="(tabs)" 
+              options={{ 
+                drawerLabel: "Principal",
+                headerShown: false 
+              }} 
+            />
+            <Drawer.Screen 
+              name="history" 
+              options={{ 
+                drawerLabel: "Histórico",
+                headerShown: true,
+                title: "Meu Histórico",
+                headerStyle: { backgroundColor: "#0b1220" },
+                headerTintColor: "#fff"
+              }} 
+            />
+          </Drawer>
+          <StatusBar style="auto" />
+        </ThemeProvider>
+      </AppErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 
