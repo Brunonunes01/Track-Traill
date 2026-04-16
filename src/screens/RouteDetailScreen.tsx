@@ -171,20 +171,29 @@ export default function RouteDetailScreen(props: RouteDetailScreenProps) {
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Alertas da rota</Text>
-          <TouchableOpacity
-            style={styles.registerBtn}
-            onPress={() =>
-              navigation.navigate("AlertForm", {
-                routeId: routeData.id,
-                routeName: routeData.titulo,
-                latitude: safeStartPoint?.latitude,
-                longitude: safeStartPoint?.longitude,
-              })
-            }
-          >
-            <Ionicons name="warning-outline" size={16} color="#000" />
-            <Text style={styles.registerText}>Registrar alerta</Text>
-          </TouchableOpacity>
+          <View style={styles.sectionActions}>
+            <TouchableOpacity
+              style={styles.segmentBtn}
+              onPress={() => navigation.navigate("SegmentCreate", { routeData })}
+            >
+              <Ionicons name="speedometer-outline" size={16} color="#dbeafe" />
+              <Text style={styles.segmentText}>Criar segmento</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.registerBtn}
+              onPress={() =>
+                navigation.navigate("AlertForm", {
+                  routeId: routeData.id,
+                  routeName: routeData.titulo,
+                  latitude: safeStartPoint?.latitude,
+                  longitude: safeStartPoint?.longitude,
+                })
+              }
+            >
+              <Ionicons name="warning-outline" size={16} color="#000" />
+              <Text style={styles.registerText}>Registrar alerta</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {loadingAlerts ? (
@@ -273,9 +282,30 @@ const styles = StyleSheet.create({
   sectionHeader: {
     marginTop: 4,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
     gap: 12,
+  },
+  sectionActions: {
+    flexDirection: "column",
+    gap: 8,
+    alignItems: "flex-end",
+  },
+  segmentBtn: {
+    backgroundColor: "#1e3a8a",
+    borderWidth: 1,
+    borderColor: "#1d4ed8",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  segmentText: {
+    color: "#dbeafe",
+    fontWeight: "700",
+    fontSize: 12,
   },
   sectionTitle: {
     color: "#fff",

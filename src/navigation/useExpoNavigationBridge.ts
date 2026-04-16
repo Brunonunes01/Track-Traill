@@ -1,4 +1,5 @@
 import { useRouter } from "expo-router";
+import { useNavigation } from "@react-navigation/native";
 import { storeNavigationPayload } from "./navPayloadStore";
 
 const routeMap: Record<string, string> = {
@@ -16,9 +17,18 @@ const routeMap: Record<string, string> = {
   AlertDetail: "/alert-detail",
   ActivitySummary: "/activity-summary",
   ActivityView: "/activity-view",
+  PostDetail: "/post-detail",
   History: "/history",
   Historico: "/history",
   Configuracoes: "/configuracoes",
+  Segments: "/segments",
+  SegmentDetail: "/segment-detail",
+  SegmentCreate: "/segment-create",
+  SegmentLeaderboard: "/segment-leaderboard",
+  PrivacyZone: "/privacy-zone",
+  ActivityFiles: "/activity-files",
+  Sensors: "/sensors",
+  Community: "/ajuda",
   Ajuda: "/ajuda",
   Admin: "/admin",
   AdminDashboard: "/admin",
@@ -28,6 +38,7 @@ const routeMap: Record<string, string> = {
 
 export function useExpoNavigationBridge() {
   const router = useRouter();
+  const navigation = useNavigation<any>();
 
   const navigate = (name: string, params?: any) => {
     const target = routeMap[name];
@@ -59,7 +70,12 @@ export function useExpoNavigationBridge() {
     navigate,
     replace,
     goBack: () => router.back(),
-    openDrawer: () => {},
-    getParent: () => undefined,
+    openDrawer: () => {
+      const parent = navigation?.getParent?.();
+      if (parent?.openDrawer) {
+        parent.openDrawer();
+      }
+    },
+    getParent: () => navigation?.getParent?.(),
   };
 }

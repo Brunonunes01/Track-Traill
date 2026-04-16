@@ -1,39 +1,39 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
+import * as SQLite from "expo-sqlite";
 import * as TaskManager from "expo-task-manager";
 import { push, ref, set } from "firebase/database";
 import { auth, database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
+import {
+  ActiveActivitySession,
+  ActivityPoint,
+  ActivityStatus,
+  ActivityType,
+  PauseReason,
+  TrackingMode,
+} from "../models/activity";
+import {
+  calculateDistance3DMeters,
+  metersToKm,
+  calculatePace,
+} from "../utils/activityMetrics";
 import { toCoordinate } from "../utils/geo";
+import { registerSegmentAttemptsForActivity } from "./segmentService";
 
-export type ActivityType = "bike" | "corrida" | "caminhada" | "trilha";
-export type TrackingMode = "background" | "foreground";
-export type ActivityStatus = "recording" | "paused" | "finished";
-
-export type ActivityPoint = {
-  latitude: number;
-  longitude: number;
-  timestamp: number;
+export type {
+  ActiveActivitySession,
+  ActivityPoint,
+  ActivityStatus,
+  ActivityType,
+  PauseReason,
+  TrackingMode,
 };
 
-export type ActiveActivitySession = {
-  id: string;
-  userId: string;
-  activityType: ActivityType;
-  status: ActivityStatus;
-  trackingMode: TrackingMode;
-  startedAt: number;
-  endedAt?: number;
-  pausedAt?: number;
-  pausedDurationMs: number;
-  distanceKm: number;
-  points: ActivityPoint[];
-  createdAt: string;
-};
+type ActiveActivitySessionMeta = Omit<ActiveActivitySession, "points">;
 
 type StartTrackingInput = {
   userId: string;
   activityType: ActivityType;
-  initialPoint?: { latitude: number; longitude: number };
+  initialPoint?: { latitude: number; longitude: number; altitude?: number | null };
 };
 
 type SaveRouteInput = {
@@ -43,36 +43,162 @@ type SaveRouteInput = {
 };
 
 const TRACKING_TASK_NAME = "tracktrail-background-location";
-const ACTIVE_SESSION_KEY = "@tracktrail/active-session";
+const TRACKING_DB_NAME = "tracktrail_tracking.db";
 const MIN_POINT_DISTANCE_METERS = 4;
 const MAX_GPS_JUMP_METERS = 250;
-const MAX_REASONABLE_SPEED_MPS = 22; // ~79 km/h, tolerante para descartar apenas outliers de GPS.
+const ELEVATION_NOISE_THRESHOLD_METERS = 1.5;
+const AUTO_PAUSE_IDLE_MS = 5000;
 
-const calculateDistanceKm = (
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number => {
-  const earthRadius = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+const MAX_REASONABLE_SPEED_MPS_BY_ACTIVITY: Record<ActivityType, number> = {
+  caminhada: 3.5,
+  corrida: 10,
+  trilha: 7,
+  bike: 30,
+};
 
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
+const AUTO_PAUSE_THRESHOLD_KMH_BY_ACTIVITY: Record<ActivityType, number> = {
+  caminhada: 0.8,
+  corrida: 1.2,
+  trilha: 0.9,
+  bike: 2.4,
+};
 
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return earthRadius * c;
+let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+
+const getTrackingDb = async () => {
+  if (!dbPromise) {
+    dbPromise = (async () => {
+      const db = await SQLite.openDatabaseAsync(TRACKING_DB_NAME);
+      await db.execAsync(`
+        PRAGMA journal_mode = WAL;
+        CREATE TABLE IF NOT EXISTS active_session (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          payload TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS tracking_points (
+          session_id TEXT NOT NULL,
+          seq INTEGER NOT NULL,
+          latitude REAL NOT NULL,
+          longitude REAL NOT NULL,
+          altitude REAL,
+          timestamp INTEGER NOT NULL,
+          PRIMARY KEY (session_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tracking_points_session_seq
+          ON tracking_points(session_id, seq);
+      `);
+
+      try {
+        await db.execAsync("ALTER TABLE tracking_points ADD COLUMN altitude REAL;");
+      } catch {
+        // Coluna já existe.
+      }
+
+      return db;
+    })();
+  }
+
+  return dbPromise;
+};
+
+const resolveMaxReasonableSpeedMps = (activityType: ActivityType) => {
+  return MAX_REASONABLE_SPEED_MPS_BY_ACTIVITY[activityType] || 10;
+};
+
+const buildDefaultSessionMeta = (
+  input: Pick<StartTrackingInput, "userId" | "activityType">,
+  mode: TrackingMode,
+  now: number
+): ActiveActivitySessionMeta => ({
+  id: `${input.userId}-${now}`,
+  userId: input.userId,
+  activityType: input.activityType,
+  status: "recording",
+  trackingMode: mode,
+  startedAt: now,
+  pausedDurationMs: 0,
+  pausedAt: undefined,
+  lastPauseReason: null,
+  distanceKm: 0,
+  createdAt: new Date(now).toISOString(),
+  elevation: {
+    gainMeters: 0,
+    lossMeters: 0,
+    minAltitude: null,
+    maxAltitude: null,
+    currentAltitude: null,
+  },
+  autoPause: {
+    enabled: true,
+    speedThresholdKmh: AUTO_PAUSE_THRESHOLD_KMH_BY_ACTIVITY[input.activityType] || 1,
+    idleMsBeforePause: AUTO_PAUSE_IDLE_MS,
+    belowThresholdSince: null,
+  },
+});
+
+const normalizeLegacyMeta = (raw: any): ActiveActivitySessionMeta | null => {
+  if (!raw || typeof raw !== "object") return null;
+
+  const activityType = (raw.activityType || "trilha") as ActivityType;
+  const legacyStatus = String(raw.status || "recording");
+  const status: ActivityStatus =
+    legacyStatus === "paused"
+      ? "paused_manual"
+      : legacyStatus === "paused_manual" || legacyStatus === "paused_auto" || legacyStatus === "finished"
+        ? (legacyStatus as ActivityStatus)
+        : "recording";
+
+  return {
+    id: String(raw.id || ""),
+    userId: String(raw.userId || ""),
+    activityType,
+    status,
+    trackingMode: raw.trackingMode === "background" ? "background" : "foreground",
+    startedAt: Number(raw.startedAt || Date.now()),
+    endedAt: typeof raw.endedAt === "number" ? raw.endedAt : undefined,
+    pausedAt: typeof raw.pausedAt === "number" ? raw.pausedAt : undefined,
+    pausedDurationMs: Number(raw.pausedDurationMs || 0),
+    lastPauseReason:
+      raw.lastPauseReason === "manual" || raw.lastPauseReason === "auto"
+        ? (raw.lastPauseReason as PauseReason)
+        : null,
+    distanceKm: Number(raw.distanceKm || 0),
+    createdAt: String(raw.createdAt || new Date().toISOString()),
+    elevation: {
+      gainMeters: Number(raw?.elevation?.gainMeters || 0),
+      lossMeters: Number(raw?.elevation?.lossMeters || 0),
+      minAltitude:
+        typeof raw?.elevation?.minAltitude === "number" ? Number(raw.elevation.minAltitude) : null,
+      maxAltitude:
+        typeof raw?.elevation?.maxAltitude === "number" ? Number(raw.elevation.maxAltitude) : null,
+      currentAltitude:
+        typeof raw?.elevation?.currentAltitude === "number"
+          ? Number(raw.elevation.currentAltitude)
+          : null,
+    },
+    autoPause: {
+      enabled: raw?.autoPause?.enabled !== false,
+      speedThresholdKmh:
+        typeof raw?.autoPause?.speedThresholdKmh === "number"
+          ? Number(raw.autoPause.speedThresholdKmh)
+          : AUTO_PAUSE_THRESHOLD_KMH_BY_ACTIVITY[activityType] || 1,
+      idleMsBeforePause:
+        typeof raw?.autoPause?.idleMsBeforePause === "number"
+          ? Number(raw.autoPause.idleMsBeforePause)
+          : AUTO_PAUSE_IDLE_MS,
+      belowThresholdSince:
+        typeof raw?.autoPause?.belowThresholdSince === "number"
+          ? Number(raw.autoPause.belowThresholdSince)
+          : null,
+    },
+  };
 };
 
 const isInvalidGpsJump = (
   previous: ActivityPoint,
   current: ActivityPoint,
-  segmentMeters: number
+  segmentMeters: number,
+  activityType: ActivityType
 ): boolean => {
   if (segmentMeters <= MAX_GPS_JUMP_METERS) {
     return false;
@@ -84,40 +210,15 @@ const isInvalidGpsJump = (
   }
 
   const speedMps = segmentMeters / (elapsedMs / 1000);
-  return speedMps > MAX_REASONABLE_SPEED_MPS;
+  return speedMps > resolveMaxReasonableSpeedMps(activityType);
 };
 
-const appendPoint = (session: ActiveActivitySession, point: ActivityPoint) => {
-  const previous = session.points[session.points.length - 1];
-
-  if (previous) {
-    const addedKm = calculateDistanceKm(
-      previous.latitude,
-      previous.longitude,
-      point.latitude,
-      point.longitude
-    );
-    const addedMeters = addedKm * 1000;
-
-    if (addedMeters < MIN_POINT_DISTANCE_METERS) {
-      return session;
-    }
-
-    if (isInvalidGpsJump(previous, point, addedMeters)) {
-      return session;
-    }
-
-    session.distanceKm += addedKm;
-  }
-
-  session.points.push(point);
-  return session;
+const normalizeAltitude = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
 };
 
-const toActivityPoint = (
-  value: any,
-  fallbackTimestamp = Date.now()
-): ActivityPoint | null => {
+const toActivityPoint = (value: any, fallbackTimestamp = Date.now()): ActivityPoint | null => {
   const coordinate = toCoordinate(value);
   if (!coordinate) {
     return null;
@@ -131,28 +232,250 @@ const toActivityPoint = (
   return {
     latitude: coordinate.latitude,
     longitude: coordinate.longitude,
+    altitude: normalizeAltitude(value?.altitude),
     timestamp,
   };
 };
 
-const saveSession = async (session: ActiveActivitySession | null) => {
-  if (!session) {
-    await AsyncStorage.removeItem(ACTIVE_SESSION_KEY);
+const updateElevationStats = (session: ActiveActivitySession, point: ActivityPoint) => {
+  const altitude = normalizeAltitude(point.altitude);
+  if (altitude === null) return;
+
+  const previousAltitude = normalizeAltitude(
+    session.points.length > 0 ? session.points[session.points.length - 1].altitude : null
+  );
+
+  if (session.elevation.minAltitude === null || altitude < session.elevation.minAltitude) {
+    session.elevation.minAltitude = altitude;
+  }
+
+  if (session.elevation.maxAltitude === null || altitude > session.elevation.maxAltitude) {
+    session.elevation.maxAltitude = altitude;
+  }
+
+  session.elevation.currentAltitude = altitude;
+
+  if (previousAltitude === null) return;
+
+  const delta = altitude - previousAltitude;
+  if (Math.abs(delta) < ELEVATION_NOISE_THRESHOLD_METERS) return;
+
+  if (delta > 0) {
+    session.elevation.gainMeters += delta;
+  } else {
+    session.elevation.lossMeters += Math.abs(delta);
+  }
+};
+
+const toSessionMeta = (session: ActiveActivitySession): ActiveActivitySessionMeta => {
+  const { points: _points, ...meta } = session;
+  return meta;
+};
+
+const saveSessionMeta = async (meta: ActiveActivitySessionMeta | null) => {
+  const db = await getTrackingDb();
+
+  if (!meta) {
+    await db.runAsync("DELETE FROM active_session WHERE id = 1");
     return;
   }
 
-  await AsyncStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
+  await db.runAsync(
+    `INSERT INTO active_session (id, payload) VALUES (1, ?)
+     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload`,
+    JSON.stringify(meta)
+  );
 };
 
-export const getActiveSession = async (): Promise<ActiveActivitySession | null> => {
-  const raw = await AsyncStorage.getItem(ACTIVE_SESSION_KEY);
-  if (!raw) return null;
+const getSessionMeta = async (): Promise<ActiveActivitySessionMeta | null> => {
+  const db = await getTrackingDb();
+  const row = await db.getFirstAsync<{ payload: string }>(
+    "SELECT payload FROM active_session WHERE id = 1"
+  );
+
+  if (!row?.payload) return null;
 
   try {
-    return JSON.parse(raw) as ActiveActivitySession;
+    return normalizeLegacyMeta(JSON.parse(row.payload));
   } catch {
     return null;
   }
+};
+
+const clearSessionPoints = async (sessionId: string) => {
+  const db = await getTrackingDb();
+  await db.runAsync("DELETE FROM tracking_points WHERE session_id = ?", sessionId);
+};
+
+const loadSessionPoints = async (sessionId: string): Promise<ActivityPoint[]> => {
+  const db = await getTrackingDb();
+  const rows = await db.getAllAsync<{
+    latitude: number;
+    longitude: number;
+    altitude: number | null;
+    timestamp: number;
+  }>(
+    "SELECT latitude, longitude, altitude, timestamp FROM tracking_points WHERE session_id = ? ORDER BY seq ASC",
+    sessionId
+  );
+
+  return rows.map((row) => ({
+    latitude: Number(row.latitude),
+    longitude: Number(row.longitude),
+    altitude: typeof row.altitude === "number" ? Number(row.altitude) : null,
+    timestamp: Number(row.timestamp),
+  }));
+};
+
+const appendSessionPoint = async (sessionId: string, point: ActivityPoint) => {
+  const db = await getTrackingDb();
+  const row = await db.getFirstAsync<{ nextSeq: number }>(
+    "SELECT COALESCE(MAX(seq) + 1, 0) AS nextSeq FROM tracking_points WHERE session_id = ?",
+    sessionId
+  );
+
+  const nextSeq = Number(row?.nextSeq ?? 0);
+  await db.runAsync(
+    "INSERT INTO tracking_points(session_id, seq, latitude, longitude, altitude, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+    sessionId,
+    nextSeq,
+    point.latitude,
+    point.longitude,
+    typeof point.altitude === "number" ? point.altitude : null,
+    point.timestamp
+  );
+};
+
+const persistSessionPoints = async (sessionId: string, points: ActivityPoint[]) => {
+  const db = await getTrackingDb();
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync("DELETE FROM tracking_points WHERE session_id = ?", sessionId);
+
+    for (let seq = 0; seq < points.length; seq += 1) {
+      const point = points[seq];
+      await db.runAsync(
+        "INSERT INTO tracking_points(session_id, seq, latitude, longitude, altitude, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+        sessionId,
+        seq,
+        point.latitude,
+        point.longitude,
+        typeof point.altitude === "number" ? point.altitude : null,
+        point.timestamp
+      );
+    }
+  });
+};
+
+const saveSession = async (session: ActiveActivitySession | null) => {
+  if (!session) {
+    const previousMeta = await getSessionMeta();
+    if (previousMeta?.id) {
+      await clearSessionPoints(previousMeta.id);
+    }
+    await saveSessionMeta(null);
+    return;
+  }
+
+  await saveSessionMeta(toSessionMeta(session));
+};
+
+const applyPauseUpdate = (session: ActiveActivitySession, now: number) => {
+  if (!session.pausedAt) return;
+  session.pausedDurationMs += Math.max(0, now - session.pausedAt);
+  delete session.pausedAt;
+};
+
+const setPaused = (session: ActiveActivitySession, reason: PauseReason, timestamp: number) => {
+  if (session.status === "paused_manual" || session.status === "paused_auto") return;
+  session.status = reason === "manual" ? "paused_manual" : "paused_auto";
+  session.pausedAt = timestamp;
+  session.lastPauseReason = reason;
+};
+
+const setRecording = (session: ActiveActivitySession, timestamp: number) => {
+  if (session.status === "recording") return;
+  applyPauseUpdate(session, timestamp);
+  session.status = "recording";
+  session.lastPauseReason = null;
+  session.autoPause.belowThresholdSince = null;
+};
+
+const processIncomingPoint = (
+  session: ActiveActivitySession,
+  point: ActivityPoint
+): { appended: boolean; segmentSpeedKmh: number } => {
+  const previous = session.points[session.points.length - 1];
+
+  if (!previous) {
+    updateElevationStats(session, point);
+    session.points.push(point);
+    return { appended: true, segmentSpeedKmh: 0 };
+  }
+
+  const segmentMeters = calculateDistance3DMeters(
+    previous.latitude,
+    previous.longitude,
+    previous.altitude,
+    point.latitude,
+    point.longitude,
+    point.altitude
+  );
+
+  const elapsedSec = Math.max(0, (point.timestamp - previous.timestamp) / 1000);
+  const segmentSpeedKmh = elapsedSec > 0 ? metersToKm(segmentMeters) / (elapsedSec / 3600) : 0;
+
+  if (session.status === "paused_manual") {
+    return { appended: false, segmentSpeedKmh };
+  }
+
+  if (session.status === "paused_auto") {
+    if (segmentSpeedKmh >= session.autoPause.speedThresholdKmh) {
+      setRecording(session, point.timestamp);
+    } else {
+      return { appended: false, segmentSpeedKmh };
+    }
+  }
+
+  if (session.status === "recording" && session.autoPause.enabled) {
+    if (segmentSpeedKmh < session.autoPause.speedThresholdKmh) {
+      if (!session.autoPause.belowThresholdSince) {
+        session.autoPause.belowThresholdSince = point.timestamp;
+      }
+
+      const idleMs = point.timestamp - session.autoPause.belowThresholdSince;
+      if (idleMs >= session.autoPause.idleMsBeforePause) {
+        setPaused(session, "auto", point.timestamp);
+        return { appended: false, segmentSpeedKmh };
+      }
+    } else {
+      session.autoPause.belowThresholdSince = null;
+    }
+  }
+
+  if (segmentMeters < MIN_POINT_DISTANCE_METERS) {
+    return { appended: false, segmentSpeedKmh };
+  }
+
+  if (isInvalidGpsJump(previous, point, segmentMeters, session.activityType)) {
+    return { appended: false, segmentSpeedKmh };
+  }
+
+  session.distanceKm += metersToKm(segmentMeters);
+  updateElevationStats(session, point);
+  session.points.push(point);
+  return { appended: true, segmentSpeedKmh };
+};
+
+export const getActiveSession = async (): Promise<ActiveActivitySession | null> => {
+  const meta = await getSessionMeta();
+  if (!meta) return null;
+
+  const points = await loadSessionPoints(meta.id);
+  return {
+    ...meta,
+    points,
+  };
 };
 
 const stopBackgroundTrackingIfRunning = async () => {
@@ -187,11 +510,11 @@ const startBackgroundTracking = async () => {
 
   await Location.startLocationUpdatesAsync(TRACKING_TASK_NAME, {
     accuracy: Location.Accuracy.Balanced,
-    distanceInterval: 10,
-    timeInterval: 5000,
-    deferredUpdatesDistance: 25,
-    deferredUpdatesInterval: 20000,
-    pausesUpdatesAutomatically: true,
+    distanceInterval: 8,
+    timeInterval: 3000,
+    deferredUpdatesDistance: 20,
+    deferredUpdatesInterval: 12000,
+    pausesUpdatesAutomatically: false,
     activityType: Location.ActivityType.Fitness,
     showsBackgroundLocationIndicator: true,
     foregroundService: {
@@ -216,16 +539,20 @@ if (!TaskManager.isTaskDefined(TRACKING_TASK_NAME)) {
       }
 
       const activeSession = await getActiveSession();
-      if (!activeSession || activeSession.status !== "recording") {
+      if (!activeSession || activeSession.status === "finished") {
         return;
       }
 
-      const updatedSession = { ...activeSession };
+      const updatedSession = { ...activeSession, points: [...activeSession.points] };
 
       for (const location of locations) {
         const safePoint = toActivityPoint(location.coords, location.timestamp || Date.now());
         if (!safePoint) continue;
-        appendPoint(updatedSession, safePoint);
+
+        const { appended } = processIncomingPoint(updatedSession, safePoint);
+        if (appended) {
+          await appendSessionPoint(updatedSession.id, safePoint);
+        }
       }
 
       await saveSession(updatedSession);
@@ -238,10 +565,11 @@ if (!TaskManager.isTaskDefined(TRACKING_TASK_NAME)) {
 export const appendForegroundPoint = async (coords: {
   latitude: number;
   longitude: number;
+  altitude?: number | null;
   timestamp?: number;
 }) => {
   const activeSession = await getActiveSession();
-  if (!activeSession || activeSession.status !== "recording") {
+  if (!activeSession || activeSession.status === "finished") {
     return null;
   }
 
@@ -250,8 +578,12 @@ export const appendForegroundPoint = async (coords: {
     return activeSession;
   }
 
-  const updatedSession = { ...activeSession };
-  appendPoint(updatedSession, safePoint);
+  const updatedSession = { ...activeSession, points: [...activeSession.points] };
+  const { appended } = processIncomingPoint(updatedSession, safePoint);
+
+  if (appended) {
+    await appendSessionPoint(updatedSession.id, safePoint);
+  }
 
   await saveSession(updatedSession);
   return updatedSession;
@@ -265,11 +597,12 @@ export const startActivityTracking = async (
 
   const existing = await getActiveSession();
   if (existing && existing.status !== "finished") {
-    const resumed = { ...existing, status: "recording" as const, trackingMode: mode };
-    if (resumed.pausedAt) {
-      resumed.pausedDurationMs += Date.now() - resumed.pausedAt;
-      delete resumed.pausedAt;
+    const resumed = { ...existing, trackingMode: mode, points: [...existing.points] };
+
+    if (resumed.status === "paused_manual" || resumed.status === "paused_auto") {
+      setRecording(resumed, Date.now());
     }
+
     await saveSession(resumed);
 
     if (mode === "background") {
@@ -280,27 +613,27 @@ export const startActivityTracking = async (
   }
 
   const now = Date.now();
+  const base = buildDefaultSessionMeta(input, mode, now);
   const session: ActiveActivitySession = {
-    id: `${input.userId}-${now}`,
-    userId: input.userId,
-    activityType: input.activityType,
-    status: "recording",
-    trackingMode: mode,
-    startedAt: now,
-    pausedDurationMs: 0,
-    distanceKm: 0,
+    ...base,
     points: [],
-    createdAt: new Date(now).toISOString(),
   };
 
   if (input.initialPoint) {
-    appendPoint(session, {
+    const initialPoint = toActivityPoint({
       latitude: input.initialPoint.latitude,
       longitude: input.initialPoint.longitude,
+      altitude: input.initialPoint.altitude ?? null,
       timestamp: now,
     });
+
+    if (initialPoint) {
+      updateElevationStats(session, initialPoint);
+      session.points.push(initialPoint);
+    }
   }
 
+  await persistSessionPoints(session.id, session.points);
   await saveSession(session);
 
   if (mode === "background") {
@@ -312,15 +645,15 @@ export const startActivityTracking = async (
 
 export const pauseActivityTracking = async () => {
   const activeSession = await getActiveSession();
-  if (!activeSession || activeSession.status !== "recording") {
+  if (!activeSession || activeSession.status === "finished") {
     return activeSession;
   }
 
   const pausedSession: ActiveActivitySession = {
     ...activeSession,
-    status: "paused",
-    pausedAt: Date.now(),
+    points: [...activeSession.points],
   };
+  setPaused(pausedSession, "manual", Date.now());
 
   await saveSession(pausedSession);
   await stopBackgroundTrackingIfRunning();
@@ -330,7 +663,7 @@ export const pauseActivityTracking = async () => {
 
 export const resumeActivityTracking = async () => {
   const activeSession = await getActiveSession();
-  if (!activeSession || activeSession.status !== "paused") {
+  if (!activeSession || activeSession.status === "finished") {
     return null;
   }
 
@@ -339,14 +672,11 @@ export const resumeActivityTracking = async () => {
 
   const resumedSession: ActiveActivitySession = {
     ...activeSession,
-    status: "recording",
     trackingMode: mode,
-    pausedDurationMs:
-      activeSession.pausedDurationMs +
-      (activeSession.pausedAt ? Date.now() - activeSession.pausedAt : 0),
+    points: [...activeSession.points],
   };
 
-  delete resumedSession.pausedAt;
+  setRecording(resumedSession, Date.now());
   await saveSession(resumedSession);
 
   if (mode === "background") {
@@ -370,16 +700,21 @@ export const finishActivityTracking = async () => {
   const finishedAt = Date.now();
   const finishedSession: ActiveActivitySession = {
     ...activeSession,
+    points: [...activeSession.points],
     status: "finished",
     endedAt: finishedAt,
-    pausedDurationMs:
-      activeSession.pausedDurationMs +
-      (activeSession.status === "paused" && activeSession.pausedAt
-        ? finishedAt - activeSession.pausedAt
-        : 0),
+    lastPauseReason: activeSession.lastPauseReason || null,
   };
 
+  const wasPaused =
+    activeSession.status === "paused_manual" || activeSession.status === "paused_auto";
+  if (wasPaused && finishedSession.pausedAt) {
+    applyPauseUpdate(finishedSession, finishedAt);
+  }
+
   delete finishedSession.pausedAt;
+  finishedSession.autoPause.belowThresholdSince = null;
+
   await saveSession(finishedSession);
 
   return finishedSession;
@@ -390,16 +725,22 @@ export const discardActiveSession = async () => {
   await saveSession(null);
 };
 
+const resolveNowBySessionStatus = (session: ActiveActivitySession): number => {
+  if (session.status === "finished") {
+    return session.endedAt || Date.now();
+  }
+
+  if (session.status === "paused_manual" || session.status === "paused_auto") {
+    return session.pausedAt || Date.now();
+  }
+
+  return Date.now();
+};
+
 export const getSessionDurationSeconds = (session: ActiveActivitySession | null): number => {
   if (!session) return 0;
 
-  const finishTimestamp =
-    session.status === "finished"
-      ? session.endedAt || Date.now()
-      : session.status === "paused"
-        ? session.pausedAt || Date.now()
-        : Date.now();
-
+  const finishTimestamp = resolveNowBySessionStatus(session);
   const elapsedMs = Math.max(0, finishTimestamp - session.startedAt - session.pausedDurationMs);
   return Math.floor(elapsedMs / 1000);
 };
@@ -426,6 +767,20 @@ export const getAverageSpeedKmh = (session: ActiveActivitySession | null): numbe
   return session.distanceKm / (durationSeconds / 3600);
 };
 
+export const getAveragePaceMinPerKm = (session: ActiveActivitySession | null): number | null => {
+  if (!session) return null;
+  const durationSeconds = getSessionDurationSeconds(session);
+  return calculatePace(session.distanceKm, durationSeconds);
+};
+
+export const getSessionRecordingStateLabel = (session: ActiveActivitySession | null): string => {
+  if (!session) return "inativo";
+  if (session.status === "recording") return "gravando";
+  if (session.status === "paused_auto") return "pausa automática";
+  if (session.status === "paused_manual") return "pausa manual";
+  return "finalizada";
+};
+
 export const saveFinishedSessionAsRoute = async (
   session: ActiveActivitySession,
   input: SaveRouteInput
@@ -446,6 +801,7 @@ export const saveFinishedSessionAsRoute = async (
   const path = session.points.map((point) => ({
     latitude: point.latitude,
     longitude: point.longitude,
+    altitude: typeof point.altitude === "number" ? point.altitude : null,
   }));
 
   const firstPoint = path[0];
@@ -466,6 +822,8 @@ export const saveFinishedSessionAsRoute = async (
       startPoint: firstPoint,
       endPoint: lastPoint,
       rotaCompleta: path,
+      elevacaoGanhoM: Number(session.elevation.gainMeters.toFixed(1)),
+      elevacaoPerdaM: Number(session.elevation.lossMeters.toFixed(1)),
       sugeridoPor: session.userId,
       emailAutor: userEmail,
       status: "pendente",
@@ -502,7 +860,10 @@ export const saveFinishedSessionAsActivity = async (
   const path = session.points.map((point) => ({
     latitude: point.latitude,
     longitude: point.longitude,
+    altitude: typeof point.altitude === "number" ? point.altitude : null,
   }));
+  const avgSpeed = getAverageSpeedKmh(session);
+  const avgPace = getAveragePaceMinPerKm(session);
 
   const atividadeRef = push(ref(database, `users/${session.userId}/atividades`));
   try {
@@ -511,12 +872,39 @@ export const saveFinishedSessionAsActivity = async (
       cidade: "Rota registrada via GPS",
       data: new Date().toLocaleDateString("pt-BR"),
       duracao: duration,
-      distancia: session.distanceKm.toFixed(2),
+      distancia: Number(session.distanceKm.toFixed(2)),
       rota: path,
+      elevacaoGanhoM: Number(session.elevation.gainMeters.toFixed(1)),
+      elevacaoPerdaM: Number(session.elevation.lossMeters.toFixed(1)),
+      altitudeMinM:
+        typeof session.elevation.minAltitude === "number"
+          ? Number(session.elevation.minAltitude.toFixed(1))
+          : null,
+      altitudeMaxM:
+        typeof session.elevation.maxAltitude === "number"
+          ? Number(session.elevation.maxAltitude.toFixed(1))
+          : null,
+      velocidadeMediaKmh: Number(avgSpeed.toFixed(2)),
+      paceMedioMinKm: avgPace !== null ? Number(avgPace.toFixed(3)) : null,
+      estadoFinal: session.lastPauseReason ? `paused_${session.lastPauseReason}` : "recording",
       criadoEm: new Date().toISOString(),
       origem: "activity_tracking",
       sessionId: session.id,
     });
+
+    try {
+      await registerSegmentAttemptsForActivity({
+        userId: session.userId,
+        activityId: atividadeRef.key || "",
+        activityType,
+        points: session.points,
+      });
+    } catch (segmentError: any) {
+      console.warn(
+        "[segments] attempt registration failed:",
+        segmentError?.message || String(segmentError)
+      );
+    }
   } catch (error) {
     throw new Error(
       normalizeFirebaseErrorMessage(error, "Não foi possível salvar a atividade.")
@@ -527,5 +915,7 @@ export const saveFinishedSessionAsActivity = async (
     activityId: atividadeRef.key,
     durationSeconds: duration,
     path,
+    avgSpeed,
+    avgPace,
   };
 };

@@ -1,5 +1,15 @@
-import { get, onValue, push, ref, set } from "firebase/database";
-import { database, normalizeFirebaseErrorMessage } from "./connectionFirebase";
+import {
+  get,
+  onValue,
+  push,
+  ref,
+  runTransaction,
+  set,
+  update,
+} from "firebase/database";
+import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
+import { database, normalizeFirebaseErrorMessage, storage } from "./connectionFirebase";
+import { getUserPrivacyZone, sanitizeRouteForPublicView } from "../src/services/privacyZoneService";
 
 const COMMUNITY_POSTS_PATH = "communityPosts";
 
@@ -11,6 +21,7 @@ const mapPostsSnapshot = (snapshot) => {
   return Object.keys(data)
     .map((id) => {
       const post = data[id] || {};
+
       const commentsObj = post.comments || {};
       const comments = Object.keys(commentsObj)
         .map((commentId) => ({ id: commentId, ...commentsObj[commentId] }))
@@ -19,10 +30,27 @@ const mapPostsSnapshot = (snapshot) => {
             new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
         );
 
+      const photosObj = post.photos || {};
+      const photos = Object.keys(photosObj)
+        .map((photoId) => ({ id: photoId, ...photosObj[photoId] }))
+        .sort(
+          (a, b) =>
+            new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime()
+        );
+
+      const kudos = post.kudos || {};
+      const kudosCount =
+        typeof post.kudosCount === "number" ? post.kudosCount : Object.keys(kudos).length;
+
       return {
         id,
         ...post,
+        photos,
         comments,
+        commentsCount:
+          typeof post.commentsCount === "number" ? post.commentsCount : comments.length,
+        kudos,
+        kudosCount,
       };
     })
     .sort(
@@ -47,11 +75,52 @@ export const subscribeCommunityPosts = (onChange, onError) => {
   );
 };
 
+const uploadPhotoToStorage = async (photoUri, ownerId, postId, index) => {
+  const response = await fetch(photoUri);
+  const blob = await response.blob();
+  const extension =
+    String(photoUri || "").split(".").pop()?.toLowerCase().replace(/[^a-z0-9]/g, "") ||
+    "jpg";
+
+  const safePostId = postId || `draft_${Date.now()}`;
+  const path = `community/photos/${ownerId}/${safePostId}/${Date.now()}_${index}.${extension}`;
+  const fileRef = storageRef(storage, path);
+
+  await uploadBytes(fileRef, blob);
+  const url = await getDownloadURL(fileRef);
+
+  return {
+    id: `${Date.now()}_${index}`,
+    url,
+    storagePath: path,
+    createdAt: new Date().toISOString(),
+  };
+};
+
+const uploadPostPhotos = async ({ photoUris, ownerId, postId }) => {
+  if (!Array.isArray(photoUris) || photoUris.length === 0) return {};
+
+  const uploaded = [];
+  for (let index = 0; index < photoUris.length; index += 1) {
+    const photoUri = photoUris[index];
+    if (!photoUri) continue;
+
+    const item = await uploadPhotoToStorage(photoUri, ownerId, postId, index);
+    uploaded.push(item);
+  }
+
+  return uploaded.reduce((acc, item) => {
+    acc[item.id] = item;
+    return acc;
+  }, {});
+};
+
 export const createCommunityPost = async ({
   authorId,
   authorName,
   text,
   imageUri,
+  photoUris,
   route,
 }) => {
   if (!authorId) throw new Error("Usuário inválido para publicação.");
@@ -59,18 +128,27 @@ export const createCommunityPost = async ({
 
   try {
     const postRef = push(ref(database, COMMUNITY_POSTS_PATH));
+    const postId = postRef.key;
+
+    const normalizedPhotoUris = [imageUri, ...(photoUris || [])].filter(Boolean);
+    const photos = await uploadPostPhotos({ photoUris: normalizedPhotoUris, ownerId: authorId, postId });
 
     await set(postRef, {
+      postType: "text_post",
+      visibility: "friends",
       authorId,
       authorName: authorName || "Usuário",
       text: text.trim(),
-      imageUri: imageUri || null,
       route: route || null,
-      createdAt: new Date().toISOString(),
+      photos,
       comments: {},
+      commentsCount: 0,
+      kudos: {},
+      kudosCount: 0,
+      createdAt: new Date().toISOString(),
     });
 
-    return postRef.key;
+    return postId;
   } catch (error) {
     throw new Error(normalizeFirebaseErrorMessage(error, "Não foi possível criar o post."));
   }
@@ -96,10 +174,60 @@ export const addCommunityComment = async ({
       createdAt: new Date().toISOString(),
     });
 
+    await runTransaction(ref(database, `${COMMUNITY_POSTS_PATH}/${postId}/commentsCount`), (current) => {
+      const currentValue = typeof current === "number" ? current : 0;
+      return currentValue + 1;
+    });
+
     return commentRef.key;
   } catch (error) {
     throw new Error(
       normalizeFirebaseErrorMessage(error, "Não foi possível adicionar o comentário.")
+    );
+  }
+};
+
+export const toggleCommunityKudo = async ({
+  postId,
+  userId,
+  userName,
+  userPhotoUrl,
+}) => {
+  if (!postId) throw new Error("Post inválido.");
+  if (!userId) throw new Error("Usuário inválido para kudo.");
+
+  const kudoRef = ref(database, `${COMMUNITY_POSTS_PATH}/${postId}/kudos/${userId}`);
+  const countRef = ref(database, `${COMMUNITY_POSTS_PATH}/${postId}/kudosCount`);
+
+  try {
+    const existing = await get(kudoRef);
+    const hasKudo = existing.exists();
+
+    if (hasKudo) {
+      await set(kudoRef, null);
+      await runTransaction(countRef, (current) => {
+        const currentValue = typeof current === "number" ? current : 0;
+        return Math.max(0, currentValue - 1);
+      });
+      return { liked: false };
+    }
+
+    await set(kudoRef, {
+      userId,
+      userName: userName || "Usuário",
+      userPhotoUrl: userPhotoUrl || null,
+      createdAt: new Date().toISOString(),
+    });
+
+    await runTransaction(countRef, (current) => {
+      const currentValue = typeof current === "number" ? current : 0;
+      return currentValue + 1;
+    });
+
+    return { liked: true };
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível atualizar o kudo agora.")
     );
   }
 };
@@ -153,7 +281,7 @@ const calculateSessionDurationSeconds = (session) => {
   const finishTimestamp =
     session.status === "finished"
       ? session.endedAt || Date.now()
-      : session.status === "paused"
+      : session.status === "paused_manual" || session.status === "paused_auto"
         ? session.pausedAt || Date.now()
         : Date.now();
 
@@ -194,6 +322,7 @@ export const createActivitySharePost = async ({
   routeName,
   caption,
   activityType,
+  photoUris,
 }) => {
   if (!userId) throw new Error("Usuário inválido para compartilhar atividade.");
   if (!session?.points?.length || session.points.length < 2) {
@@ -202,13 +331,32 @@ export const createActivitySharePost = async ({
 
   const { authorName, authorPhotoUrl } = await getAuthorProfile(userId);
   const durationSec = calculateSessionDurationSeconds(session);
-  const path = session.points.map((point) => ({
+  const fullPath = session.points.map((point) => ({
     latitude: point.latitude,
     longitude: point.longitude,
+    altitude: typeof point.altitude === "number" ? point.altitude : null,
   }));
+  const privacyZone = await getUserPrivacyZone(userId);
+  const sanitizedRoute = sanitizeRouteForPublicView(fullPath, privacyZone);
+  const path = sanitizedRoute.publicPoints;
+  const elevation = session?.elevation || {};
+  const paceMedioMinKm =
+    durationSec > 0 && Number(session.distanceKm || 0) > 0
+      ? durationSec / 60 / Number(session.distanceKm || 0)
+      : null;
+  const velocidadeMediaKmh =
+    durationSec > 0 ? Number(session.distanceKm || 0) / (durationSec / 3600) : 0;
 
   try {
     const postRef = push(ref(database, COMMUNITY_POSTS_PATH));
+    const postId = postRef.key;
+
+    const photos = await uploadPostPhotos({
+      photoUris: Array.isArray(photoUris) ? photoUris : [],
+      ownerId: userId,
+      postId,
+    });
+
     await set(postRef, {
       postType: "activity_share",
       visibility: "friends",
@@ -223,19 +371,56 @@ export const createActivitySharePost = async ({
       durationSec,
       caption: (caption || "").trim(),
       activityDate: new Date(session.endedAt || Date.now()).toISOString(),
+      velocidadeMediaKmh: Number(velocidadeMediaKmh.toFixed(2)),
+      paceMedioMinKm: Number.isFinite(paceMedioMinKm) ? Number(paceMedioMinKm.toFixed(3)) : null,
+      elevacaoGanhoM: Number(Number(elevation.gainMeters || 0).toFixed(1)),
+      elevacaoPerdaM: Number(Number(elevation.lossMeters || 0).toFixed(1)),
+      altitudeMinM:
+        typeof elevation.minAltitude === "number" ? Number(elevation.minAltitude.toFixed(1)) : null,
+      altitudeMaxM:
+        typeof elevation.maxAltitude === "number" ? Number(elevation.maxAltitude.toFixed(1)) : null,
+      privacySanitized: sanitizedRoute.sanitized,
+      privacyTrimStartPoints: sanitizedRoute.removedFromStart,
+      privacyTrimEndPoints: sanitizedRoute.removedFromEnd,
       routeSnapshot: {
         points: path,
         startPoint: path[0] || null,
         endPoint: path[path.length - 1] || null,
       },
-      createdAt: new Date().toISOString(),
+      photos,
       comments: {},
+      commentsCount: 0,
+      kudos: {},
+      kudosCount: 0,
+      createdAt: new Date().toISOString(),
     });
 
     return postRef.key;
   } catch (error) {
     throw new Error(
       normalizeFirebaseErrorMessage(error, "Não foi possível compartilhar a atividade.")
+    );
+  }
+};
+
+export const getCommunityPostById = async (postId) => {
+  if (!postId) throw new Error("Post inválido.");
+
+  try {
+    const snapshot = await get(ref(database, `${COMMUNITY_POSTS_PATH}/${postId}`));
+    if (!snapshot.exists()) {
+      throw new Error("Post não encontrado.");
+    }
+
+    const list = mapPostsSnapshot({
+      exists: () => true,
+      val: () => ({ [postId]: snapshot.val() }),
+    });
+
+    return list[0];
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível carregar o post agora.")
     );
   }
 };

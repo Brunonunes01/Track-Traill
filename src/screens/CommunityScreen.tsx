@@ -1,13 +1,14 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
+import { Image } from "expo-image";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   ActivityIndicator,
   FlatList,
-  Image,
   ImageBackground,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -18,6 +19,7 @@ import { auth } from "../../services/connectionFirebase";
 import {
   addCommunityComment,
   subscribeCommunityPosts,
+  toggleCommunityKudo,
 } from "../../services/communityService";
 import {
   subscribeFriendships,
@@ -60,6 +62,12 @@ type SharedActivityPost = {
   activityType?: string;
   distanceKm?: number;
   durationSec?: number;
+  velocidadeMediaKmh?: number;
+  paceMedioMinKm?: number | null;
+  elevacaoGanhoM?: number;
+  elevacaoPerdaM?: number;
+  altitudeMinM?: number | null;
+  altitudeMaxM?: number | null;
   caption?: string;
   activityDate?: string;
   createdAt?: string;
@@ -69,6 +77,10 @@ type SharedActivityPost = {
     endPoint?: { latitude: number; longitude: number } | null;
   };
   comments?: CommunityComment[];
+  photos?: { id: string; url: string }[];
+  kudos?: Record<string, { userId: string; createdAt: string }>;
+  kudosCount?: number;
+  privacySanitized?: boolean;
 };
 
 type CommunityScreenProps = {
@@ -97,6 +109,14 @@ const formatDuration = (totalSeconds?: number) => {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 };
 
+const formatPace = (pace?: number | null) => {
+  if (!Number.isFinite(pace as number) || Number(pace) <= 0) return "--";
+  const total = Math.round(Number(pace) * 60);
+  const min = Math.floor(total / 60);
+  const sec = total % 60;
+  return `${min}:${String(sec).padStart(2, "0")} min/km`;
+};
+
 const getDisplayName = (post: SharedActivityPost, usersById: Record<string, AppUser>) => {
   const user = usersById[post.authorId];
   return (
@@ -121,6 +141,7 @@ export default function CommunityScreen(props: CommunityScreenProps) {
 
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentingPostId, setCommentingPostId] = useState<string | null>(null);
+  const [likingPostId, setLikingPostId] = useState<string | null>(null);
   const [openCommentsPostId, setOpenCommentsPostId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -247,15 +268,19 @@ export default function CommunityScreen(props: CommunityScreenProps) {
     const authorName = getDisplayName(item, usersById);
     const authorPhoto = getPhotoUrl(item, usersById);
     const comments = item.comments || [];
+    const photos = item.photos || [];
     const isCommentsOpen = openCommentsPostId === item.id;
     const hasRoute = (item.routeSnapshot?.points || []).length > 1;
+    const hasKudo = Boolean(uid && item.kudos && item.kudos[uid]);
+    const kudosCount =
+      typeof item.kudosCount === "number" ? item.kudosCount : Object.keys(item.kudos || {}).length;
 
     return (
       <View style={styles.postCard}>
         <View style={styles.postHeader}>
           <View style={styles.avatarWrap}>
             {authorPhoto ? (
-              <Image source={{ uri: authorPhoto }} style={styles.avatarImage} />
+              <Image source={{ uri: authorPhoto }} style={styles.avatarImage} contentFit="cover" transition={120} cachePolicy="memory-disk" />
             ) : (
               <Text style={styles.avatarText}>{authorName.charAt(0).toUpperCase()}</Text>
             )}
@@ -286,13 +311,91 @@ export default function CommunityScreen(props: CommunityScreenProps) {
           </View>
         </View>
 
+        <View style={styles.metricsRow}>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Pace</Text>
+            <Text style={styles.metricValue}>{formatPace(item.paceMedioMinKm)}</Text>
+          </View>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Velocidade média</Text>
+            <Text style={styles.metricValue}>{Number(item.velocidadeMediaKmh || 0).toFixed(1)} km/h</Text>
+          </View>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Elevação +</Text>
+            <Text style={styles.metricValue}>{Number(item.elevacaoGanhoM || 0).toFixed(0)} m</Text>
+          </View>
+        </View>
+
+        <View style={styles.metricsRow}>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Elevação -</Text>
+            <Text style={styles.metricValue}>{Number(item.elevacaoPerdaM || 0).toFixed(0)} m</Text>
+          </View>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Alt min</Text>
+            <Text style={styles.metricValue}>
+              {Number.isFinite(item.altitudeMinM as number) ? `${Number(item.altitudeMinM).toFixed(0)} m` : "--"}
+            </Text>
+          </View>
+          <View style={styles.metricItem}>
+            <Text style={styles.metricLabel}>Alt max</Text>
+            <Text style={styles.metricValue}>
+              {Number.isFinite(item.altitudeMaxM as number) ? `${Number(item.altitudeMaxM).toFixed(0)} m` : "--"}
+            </Text>
+          </View>
+        </View>
+
         {item.caption ? <Text style={styles.captionText}>{item.caption}</Text> : null}
+        {item.privacySanitized ? (
+          <Text style={styles.privacyBadge}>Rota pública sanitizada por zona de privacidade</Text>
+        ) : null}
+        {photos.length > 0 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+            {photos.map((photo) => (
+              <Image key={photo.id} source={{ uri: photo.url }} style={styles.feedPhoto} contentFit="cover" transition={140} cachePolicy="memory-disk" />
+            ))}
+          </ScrollView>
+        ) : null}
 
         {item.routeName ? (
           <Text style={styles.routeNameText}>Rota: {item.routeName}</Text>
         ) : null}
 
         <View style={styles.actionsRow}>
+          <TouchableOpacity
+            style={[styles.kudoBtn, hasKudo ? styles.kudoBtnActive : null]}
+            onPress={async () => {
+              if (!uid) return;
+              try {
+                setLikingPostId(item.id);
+                await toggleCommunityKudo({
+                  postId: item.id,
+                  userId: uid,
+                  userName: usersById[uid]?.fullName || usersById[uid]?.username || "Usuário",
+                  userPhotoUrl: usersById[uid]?.photoUrl || null,
+                });
+              } catch (error: any) {
+                Alert.alert("Erro", error?.message || "Não foi possível enviar kudos agora.");
+              } finally {
+                setLikingPostId(null);
+              }
+            }}
+            disabled={likingPostId === item.id}
+          >
+            {likingPostId === item.id ? (
+              <ActivityIndicator size="small" color={hasKudo ? "#111827" : "#f8fafc"} />
+            ) : (
+              <Ionicons
+                name={hasKudo ? "heart" : "heart-outline"}
+                size={16}
+                color={hasKudo ? "#111827" : "#f8fafc"}
+              />
+            )}
+            <Text style={[styles.kudoBtnText, hasKudo ? styles.kudoBtnTextActive : null]}>
+              Kudos ({kudosCount})
+            </Text>
+          </TouchableOpacity>
+
           <TouchableOpacity
             style={[styles.actionBtn, !hasRoute ? styles.actionBtnDisabled : null]}
             disabled={!hasRoute}
@@ -308,6 +411,14 @@ export default function CommunityScreen(props: CommunityScreenProps) {
           >
             <Ionicons name="chatbubble-outline" size={16} color="#d1d5db" />
             <Text style={styles.commentsToggleText}>Comentários ({comments.length})</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.detailBtn}
+            onPress={() => navigation.navigate("PostDetail", { postId: item.id })}
+          >
+            <Ionicons name="open-outline" size={16} color="#d1d5db" />
+            <Text style={styles.commentsToggleText}>Detalhes</Text>
           </TouchableOpacity>
         </View>
 
@@ -374,6 +485,10 @@ export default function CommunityScreen(props: CommunityScreenProps) {
             keyExtractor={(item) => item.id}
             contentContainerStyle={styles.listContent}
             renderItem={renderPost}
+            initialNumToRender={5}
+            maxToRenderPerBatch={5}
+            windowSize={8}
+            removeClippedSubviews
             ListEmptyComponent={
               <View style={styles.emptyBlock}>
                 <Text style={styles.emptyTitle}>Sem compartilhamentos por enquanto</Text>
@@ -505,6 +620,32 @@ const styles = StyleSheet.create({
     marginTop: 10,
     lineHeight: 20,
   },
+  privacyBadge: {
+    marginTop: 8,
+    alignSelf: "flex-start",
+    color: "#c7d2fe",
+    fontSize: 11,
+    borderWidth: 1,
+    borderColor: "rgba(129,140,248,0.35)",
+    backgroundColor: "rgba(55,48,163,0.22)",
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  photosRow: {
+    marginTop: 10,
+    gap: 8,
+    paddingRight: 6,
+  },
+  feedPhoto: {
+    width: 132,
+    height: 108,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+    marginRight: 8,
+    backgroundColor: "#020617",
+  },
   routeNameText: {
     color: "#93c5fd",
     marginTop: 8,
@@ -513,11 +654,32 @@ const styles = StyleSheet.create({
   },
   actionsRow: {
     marginTop: 10,
-    flexDirection: "row",
     gap: 8,
   },
+  kudoBtn: {
+    backgroundColor: "#111827",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#334155",
+    minHeight: 38,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  kudoBtnActive: {
+    backgroundColor: "#fb7185",
+    borderColor: "#fb7185",
+  },
+  kudoBtnText: {
+    color: "#f8fafc",
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  kudoBtnTextActive: {
+    color: "#111827",
+  },
   actionBtn: {
-    flex: 1,
     backgroundColor: "#facc15",
     borderRadius: 10,
     paddingVertical: 9,
@@ -535,7 +697,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   commentsToggleBtn: {
-    flex: 1,
     backgroundColor: "#1f2937",
     borderRadius: 10,
     borderWidth: 1,
@@ -550,6 +711,17 @@ const styles = StyleSheet.create({
     color: "#d1d5db",
     fontWeight: "700",
     fontSize: 12,
+  },
+  detailBtn: {
+    backgroundColor: "#1f2937",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#374151",
+    paddingVertical: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
   },
   commentsBlock: {
     marginTop: 10,

@@ -4,7 +4,9 @@ import React, { useState } from "react";
 import {
   Image,
   ImageBackground,
+  KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -24,6 +26,7 @@ export default function RegisterScreen({ navigation }: any) {
   const [address, setAddress] = useState("");
   const [error, setError] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleRegister = async () => {
     if (!fullName || !username || !email || !password || !birthDate || !phone || !address) {
@@ -42,19 +45,18 @@ export default function RegisterScreen({ navigation }: any) {
       return;
     }
 
+    if (isSubmitting) return;
+
     try {
-      const userCredential = await createUserWithEmailAndPassword(
-        auth,
-        email,
-        password
-      );
+      setIsSubmitting(true);
+      const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
       const user = userCredential.user;
 
       await registerUserProfile({
         uid: user.uid,
-        fullName,
+        fullName: fullName.trim(),
         username: normalizedUsername,
-        email,
+        email: email.trim(),
         birthDate: birthDate.trim(),
         phone: phone.trim(),
         address: address.trim(),
@@ -71,239 +73,280 @@ export default function RegisterScreen({ navigation }: any) {
 
       navigation.navigate("Login");
     } catch (err: any) {
-      if (err.code === "auth/email-already-in-use")
-        setError("Este e-mail já está em uso.");
-      else if (err.code === "auth/invalid-email")
-        setError("E-mail inválido.");
+      if (err.code === "auth/email-already-in-use") setError("Este e-mail já está em uso.");
+      else if (err.code === "auth/invalid-email") setError("E-mail inválido.");
       else setError(err?.message || "Erro ao criar conta.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  // helper para aplicar style extra no web (remove outline no web)
-  const webInputExtraStyle = Platform.OS === "web" ? { outlineWidth: 0 } : {};
+  const webInputExtraStyle = Platform.OS === "web" ? ({ outlineWidth: 0 } as any) : {};
 
   return (
-    <ImageBackground
-      source={require("../../assets/images/Azulao.png")}
-      style={styles.background}
-    >
+    <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
       <View style={styles.overlay}>
-        <View style={styles.container}>
-          <Image
-            style={styles.logo}
-            source={require("../../assets/images/LogoTrack.png")}
-          />
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.keyboardWrap}>
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.scrollContent}
+          >
+            <View style={styles.card}>
+              <Image style={styles.logo} source={require("../../assets/images/LogoTrack.png")} />
 
-          <Text style={styles.title}>Crie sua conta</Text>
-          <Text style={styles.subtitle}>
-            Cadastre-se para começar a registrar suas atividades
-          </Text>
+              <Text style={styles.title}>Crie sua conta</Text>
+              <Text style={styles.subtitle}>Cadastre-se para começar a registrar suas atividades</Text>
 
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
+              {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-          <TextInput
-            style={[styles.input, webInputExtraStyle]}
-            placeholder="Nome completo"
-            placeholderTextColor="#CCCCCC"
-            value={fullName}
-            onChangeText={(text) => {
-              setFullName(text);
-              if (error) setError("");
-            }}
-            underlineColorAndroid="transparent"
-            autoCorrect={false}
-          />
+              <View style={styles.inputContainer}>
+                <Ionicons name="person-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputExtraStyle]}
+                  placeholder="Nome completo"
+                  placeholderTextColor="#cbd5e1"
+                  value={fullName}
+                  onChangeText={(text) => {
+                    setFullName(text);
+                    if (error) setError("");
+                  }}
+                  underlineColorAndroid="transparent"
+                  autoCorrect={false}
+                />
+              </View>
 
-          <TextInput
-            style={[styles.input, webInputExtraStyle]}
-            placeholder="Nome de usuário"
-            placeholderTextColor="#CCCCCC"
-            value={username}
-            onChangeText={(text) => {
-              setUsername(text);
-              if (error) setError("");
-            }}
-            underlineColorAndroid="transparent"
-            autoCorrect={false}
-            autoCapitalize="none"
-          />
+              <View style={styles.inputContainer}>
+                <Ionicons name="at-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputExtraStyle]}
+                  placeholder="Nome de usuário"
+                  placeholderTextColor="#cbd5e1"
+                  value={username}
+                  onChangeText={(text) => {
+                    setUsername(text);
+                    if (error) setError("");
+                  }}
+                  underlineColorAndroid="transparent"
+                  autoCorrect={false}
+                  autoCapitalize="none"
+                />
+              </View>
 
-          <TextInput
-            style={[styles.input, webInputExtraStyle]}
-            placeholder="E-mail"
-            placeholderTextColor="#CCCCCC"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            value={email}
-            onChangeText={(text) => {
-              setEmail(text);
-              if (error) setError("");
-            }}
-            underlineColorAndroid="transparent"
-            autoCorrect={false}
-          />
+              <View style={styles.inputContainer}>
+                <Ionicons name="mail-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputExtraStyle]}
+                  placeholder="E-mail"
+                  placeholderTextColor="#cbd5e1"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  value={email}
+                  onChangeText={(text) => {
+                    setEmail(text);
+                    if (error) setError("");
+                  }}
+                  underlineColorAndroid="transparent"
+                  autoCorrect={false}
+                />
+              </View>
 
-          <TextInput
-            style={[styles.input, webInputExtraStyle]}
-            placeholder="Data de nascimento (DD/MM/AAAA)"
-            placeholderTextColor="#CCCCCC"
-            value={birthDate}
-            onChangeText={(text) => {
-              setBirthDate(text);
-              if (error) setError("");
-            }}
-            underlineColorAndroid="transparent"
-            autoCorrect={false}
-          />
+              <View style={styles.inputContainer}>
+                <Ionicons name="calendar-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputExtraStyle]}
+                  placeholder="Data de nascimento (DD/MM/AAAA)"
+                  placeholderTextColor="#cbd5e1"
+                  value={birthDate}
+                  onChangeText={(text) => {
+                    setBirthDate(text);
+                    if (error) setError("");
+                  }}
+                  underlineColorAndroid="transparent"
+                  autoCorrect={false}
+                />
+              </View>
 
-          <TextInput
-            style={[styles.input, webInputExtraStyle]}
-            placeholder="Telefone"
-            placeholderTextColor="#CCCCCC"
-            value={phone}
-            onChangeText={(text) => {
-              setPhone(text);
-              if (error) setError("");
-            }}
-            underlineColorAndroid="transparent"
-            keyboardType="phone-pad"
-            autoCorrect={false}
-          />
+              <View style={styles.inputContainer}>
+                <Ionicons name="call-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputExtraStyle]}
+                  placeholder="Telefone"
+                  placeholderTextColor="#cbd5e1"
+                  value={phone}
+                  onChangeText={(text) => {
+                    setPhone(text);
+                    if (error) setError("");
+                  }}
+                  underlineColorAndroid="transparent"
+                  keyboardType="phone-pad"
+                  autoCorrect={false}
+                />
+              </View>
 
-          <TextInput
-            style={[styles.input, webInputExtraStyle]}
-            placeholder="Endereço"
-            placeholderTextColor="#CCCCCC"
-            value={address}
-            onChangeText={(text) => {
-              setAddress(text);
-              if (error) setError("");
-            }}
-            underlineColorAndroid="transparent"
-            autoCorrect={false}
-          />
+              <View style={styles.inputContainer}>
+                <Ionicons name="location-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputExtraStyle]}
+                  placeholder="Endereço"
+                  placeholderTextColor="#cbd5e1"
+                  value={address}
+                  onChangeText={(text) => {
+                    setAddress(text);
+                    if (error) setError("");
+                  }}
+                  underlineColorAndroid="transparent"
+                  autoCorrect={false}
+                />
+              </View>
 
-          {/* Campo de senha com olhinho */}
-          <View style={styles.passwordContainer}>
-            <TextInput
-              style={[styles.passwordInput, webInputExtraStyle]}
-              placeholder="Senha"
-              placeholderTextColor="#CCCCCC"
-              secureTextEntry={!showPassword}
-              value={password}
-              onChangeText={(text) => {
-                setPassword(text);
-                if (error) setError("");
-              }}
-              underlineColorAndroid="transparent"
-              autoCorrect={false}
-            />
-            <TouchableOpacity
-              onPress={() => setShowPassword(!showPassword)}
-              style={styles.eyeButton}
-            >
-              <Ionicons
-                name={showPassword ? "eye" : "eye-off"}
-                size={22}
-                color="#FFFFFF"
-              />
-            </TouchableOpacity>
-          </View>
+              <View style={styles.inputContainer}>
+                <Ionicons name="lock-closed-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputExtraStyle]}
+                  placeholder="Senha"
+                  placeholderTextColor="#cbd5e1"
+                  secureTextEntry={!showPassword}
+                  value={password}
+                  onChangeText={(text) => {
+                    setPassword(text);
+                    if (error) setError("");
+                  }}
+                  underlineColorAndroid="transparent"
+                  autoCorrect={false}
+                />
+                <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeButton}>
+                  <Ionicons name={showPassword ? "eye" : "eye-off"} size={20} color="#e5e7eb" />
+                </TouchableOpacity>
+              </View>
 
-          <TouchableOpacity style={styles.button} onPress={handleRegister}>
-            <Text style={styles.buttonText}>CRIAR CONTA</Text>
-          </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.primaryButton, isSubmitting && styles.buttonDisabled]}
+                onPress={handleRegister}
+                disabled={isSubmitting}
+              >
+                <Text style={styles.primaryButtonText}>
+                  {isSubmitting ? "CRIANDO..." : "CRIAR CONTA"}
+                </Text>
+              </TouchableOpacity>
 
-          <TouchableOpacity onPress={() => navigation.navigate("Login")}>
-            <Text style={styles.switchText}>
-              Já tem uma conta? <Text style={styles.switchLink}>Entrar</Text>
-            </Text>
-          </TouchableOpacity>
-        </View>
+              <TouchableOpacity style={styles.switchButton} onPress={() => navigation.navigate("Login")}>
+                <Text style={styles.switchText}>
+                  Já tem uma conta? <Text style={styles.switchLink}>Entrar</Text>
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </View>
     </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
-  background: { flex: 1, resizeMode: "cover" },
+  background: { flex: 1 },
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    justifyContent: "center",
-    alignItems: "center",
+    backgroundColor: "rgba(1, 9, 23, 0.72)",
+    paddingHorizontal: 18,
   },
-  container: { width: "85%", alignItems: "center" },
-  logo: { width: 300, height: 300, marginBottom: 10, resizeMode: "contain" },
+  keyboardWrap: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingVertical: 24,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 460,
+    alignSelf: "center",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.28)",
+    backgroundColor: "rgba(2, 6, 23, 0.52)",
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 22,
+  },
+  logo: {
+    width: 150,
+    height: 150,
+    marginBottom: 8,
+    resizeMode: "contain",
+    alignSelf: "center",
+  },
   title: {
     color: "#FFFFFF",
-    fontSize: 24,
-    fontWeight: "bold",
-    marginBottom: 5,
+    fontSize: 27,
+    fontWeight: "800",
     textAlign: "center",
   },
   subtitle: {
-    color: "#DDDDDD",
+    color: "#dbeafe",
     fontSize: 14,
-    marginBottom: 20,
+    marginTop: 4,
+    marginBottom: 16,
     textAlign: "center",
   },
-  input: {
+  inputContainer: {
     width: "100%",
-    height: 50,
-    borderColor: "#FFFFFF",
-    borderWidth: 1,
-    borderRadius: 25,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    paddingHorizontal: 20,
-    color: "#FFFFFF",
-    fontSize: 16,
-    marginBottom: 15,
-  },
-  passwordContainer: {
+    minHeight: 50,
+    borderWidth: 1.5,
+    borderColor: "rgba(255,255,255,0.5)",
+    borderRadius: 14,
+    backgroundColor: "rgba(30, 41, 59, 0.75)",
+    marginBottom: 10,
     flexDirection: "row",
     alignItems: "center",
-    width: "100%",
-    height: 50,
-    borderWidth: 1,
-    borderColor: "#FFFFFF",
-    borderRadius: 25,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    paddingHorizontal: 15,
-    marginBottom: 10,
+    paddingHorizontal: 12,
   },
-  passwordInput: {
+  inputIcon: {
+    marginRight: 8,
+  },
+  input: {
     flex: 1,
     color: "#FFFFFF",
-    fontSize: 16,
+    fontSize: 15,
+    paddingVertical: 0,
   },
   eyeButton: {
-    padding: 5,
+    paddingHorizontal: 4,
+    paddingVertical: 6,
   },
-  button: {
+  primaryButton: {
     width: "100%",
-    backgroundColor: "#1e4db7",
-    borderRadius: 25,
-    paddingVertical: 15,
+    backgroundColor: "#2563eb",
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: "center",
-    marginTop: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    elevation: 4,
+    marginTop: 8,
   },
-  buttonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "bold" },
+  buttonDisabled: {
+    opacity: 0.72,
+  },
+  primaryButtonText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+  switchButton: {
+    marginTop: 16,
+  },
   switchText: {
-    color: "#CCCCCC",
-    fontSize: 13,
-    marginTop: 20,
+    color: "#e2e8f0",
+    fontSize: 14,
     textAlign: "center",
   },
-  switchLink: { color: "#1e4db7", fontWeight: "bold" },
+  switchLink: {
+    color: "#60a5fa",
+    fontWeight: "800",
+  },
   errorText: {
-    color: "#ff4d4d",
+    color: "#fda4af",
     fontSize: 13,
     marginBottom: 10,
-    textAlign: "center",
   },
 });

@@ -1,5 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import { Image } from "expo-image";
+import * as ImagePicker from "expo-image-picker";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -16,16 +18,22 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ActivityType,
   ActiveActivitySession,
-  saveFinishedSessionAsActivity,
   discardActiveSession,
   formatDuration,
+  getAveragePaceMinPerKm,
   getActiveSession,
+  getSessionRecordingStateLabel,
   getAverageSpeedKmh,
   getSessionDurationSeconds,
+  saveFinishedSessionAsActivity,
   saveFinishedSessionAsRoute,
 } from "../services/activityTrackingService";
 import { createActivitySharePost } from "../../services/communityService";
+import { formatPace, getPerformancePrimary } from "../utils/activityMetrics";
 import { FALLBACK_REGION, getRegionWithFallback, toCoordinateArray } from "../utils/geo";
+import ElevationChart from "../components/activity/ElevationChart";
+import PaceChart from "../components/activity/PaceChart";
+import { buildElevationChartData, buildPaceChartData, ChartPoint } from "../utils/activityCharts";
 
 const ACTIVITY_OPTIONS: { label: string; value: ActivityType }[] = [
   { label: "Bike", value: "bike" },
@@ -57,6 +65,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
   const [routeName, setRouteName] = useState("");
   const [description, setDescription] = useState("");
   const [caption, setCaption] = useState("");
+  const [photoUris, setPhotoUris] = useState<string[]>([]);
   const [activityType, setActivityType] = useState<ActivityType>(
     sessionFromParams?.activityType || "trilha"
   );
@@ -95,6 +104,28 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
 
   const durationSeconds = useMemo(() => getSessionDurationSeconds(session), [session]);
   const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
+  const averagePace = useMemo(() => getAveragePaceMinPerKm(session), [session]);
+  const performancePrimary = useMemo(
+    () => getPerformancePrimary(activityType, averageSpeed, averagePace),
+    [activityType, averagePace, averageSpeed]
+  );
+  const recordingState = useMemo(() => getSessionRecordingStateLabel(session), [session]);
+  const elevationGain = useMemo(() => Number(session?.elevation?.gainMeters || 0), [session]);
+  const elevationLoss = useMemo(() => Number(session?.elevation?.lossMeters || 0), [session]);
+  const altitudeMin = useMemo(
+    () =>
+      typeof session?.elevation?.minAltitude === "number"
+        ? session.elevation.minAltitude
+        : null,
+    [session?.elevation?.minAltitude]
+  );
+  const altitudeMax = useMemo(
+    () =>
+      typeof session?.elevation?.maxAltitude === "number"
+        ? session.elevation.maxAltitude
+        : null,
+    [session?.elevation?.maxAltitude]
+  );
 
   const mapPoints = useMemo(
     () => toCoordinateArray(session?.points || []),
@@ -108,6 +139,9 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
       longitudeDelta: 0.02,
     });
   }, [mapPoints]);
+  const elevationChartPoints = useMemo(() => buildElevationChartData(session?.points || []), [session?.points]);
+  const paceChartPoints = useMemo(() => buildPaceChartData(session?.points || []), [session?.points]);
+  const [focusedChartPoint, setFocusedChartPoint] = useState<ChartPoint | null>(null);
 
   const handleDiscard = async () => {
     try {
@@ -165,6 +199,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
         routeName: routeName.trim() || null,
         caption,
         activityType,
+        photoUris,
       });
 
       await discardActiveSession();
@@ -206,6 +241,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
         routeName: routeName.trim(),
         caption,
         activityType,
+        photoUris,
       });
 
       Alert.alert(
@@ -218,6 +254,33 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
     } finally {
       setSaving(false);
       setSharing(false);
+    }
+  };
+
+  const handlePickPhotos = async () => {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (permission.status !== "granted") {
+        Alert.alert("Permissão necessária", "Permita acesso à galeria para anexar fotos.");
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        allowsMultipleSelection: true,
+        mediaTypes: ["images"],
+        quality: 0.72,
+        selectionLimit: 4,
+      });
+
+      if (result.canceled) return;
+      const next = (result.assets || [])
+        .map((asset) => asset.uri)
+        .filter((uri): uri is string => Boolean(uri));
+
+      if (next.length === 0) return;
+      setPhotoUris((prev) => [...prev, ...next].slice(0, 6));
+    } catch (error: any) {
+      Alert.alert("Erro", error?.message || "Não foi possível selecionar fotos.");
     }
   };
 
@@ -264,6 +327,11 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
           {mapPoints.length > 1 ? (
             <Polyline coordinates={mapPoints} strokeColor="#ffd700" strokeWidth={5} />
           ) : null}
+          {focusedChartPoint ? (
+            <Marker coordinate={focusedChartPoint.coordinate} title="Ponto selecionado">
+              <Ionicons name="ellipse" size={18} color="#f97316" />
+            </Marker>
+          ) : null}
         </MapView>
 
         <TouchableOpacity style={[styles.backBtn, { top: insets.top + 8 }]} onPress={() => navigation.goBack()}>
@@ -286,8 +354,30 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
           </View>
 
           <View style={styles.metricCard}>
-            <Text style={styles.metricLabel}>Velocidade média</Text>
-            <Text style={styles.metricValue}>{averageSpeed.toFixed(1)} km/h</Text>
+            <Text style={styles.metricLabel}>{performancePrimary.label}</Text>
+            <Text style={styles.metricValue}>{performancePrimary.value}</Text>
+          </View>
+        </View>
+
+        <ElevationChart points={elevationChartPoints} onPointFocus={setFocusedChartPoint} />
+        <PaceChart points={paceChartPoints} onPointFocus={setFocusedChartPoint} />
+
+        <View style={styles.metricsRow}>
+          <View style={styles.metricCard}>
+            <Text style={styles.metricLabel}>Ganho elevação</Text>
+            <Text style={styles.metricValue}>{elevationGain.toFixed(0)} m</Text>
+          </View>
+          <View style={styles.metricCard}>
+            <Text style={styles.metricLabel}>Perda elevação</Text>
+            <Text style={styles.metricValue}>{elevationLoss.toFixed(0)} m</Text>
+          </View>
+          <View style={styles.metricCard}>
+            <Text style={styles.metricLabel}>Altitude mín/máx</Text>
+            <Text style={styles.metricValue}>
+              {altitudeMin !== null && altitudeMax !== null
+                ? `${altitudeMin.toFixed(0)} / ${altitudeMax.toFixed(0)} m`
+                : "N/D"}
+            </Text>
           </View>
         </View>
 
@@ -342,10 +432,35 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
           placeholderTextColor="#6b7280"
         />
 
+        <Text style={styles.label}>Fotos da atividade (opcional)</Text>
+        <TouchableOpacity style={styles.infoBtn} onPress={handlePickPhotos} disabled={saving || sharing}>
+          <Ionicons name="images-outline" size={18} color="#fff" />
+          <Text style={styles.infoBtnText}>Anexar fotos</Text>
+        </TouchableOpacity>
+
+        {photoUris.length > 0 ? (
+          <View style={styles.photosRow}>
+            {photoUris.map((uri, index) => (
+              <View key={`${uri}-${index}`} style={styles.photoItemWrap}>
+                <Image source={{ uri }} style={styles.photoPreview} />
+                <TouchableOpacity
+                  style={styles.photoRemoveBtn}
+                  onPress={() =>
+                    setPhotoUris((prev) => prev.filter((_, photoIndex) => photoIndex !== index))
+                  }
+                >
+                  <Ionicons name="close" size={12} color="#fff" />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </View>
+        ) : null}
+
         <View style={styles.infoBox}>
           <Text style={styles.infoText}>Tipo original: {getActivityLabel(session.activityType)}</Text>
           <Text style={styles.infoText}>Pontos GPS: {session.points.length}</Text>
-          <Text style={styles.infoText}>Status: {session.status}</Text>
+          <Text style={styles.infoText}>Status: {recordingState}</Text>
+          <Text style={styles.infoText}>Pace médio: {formatPace(averagePace)}</Text>
         </View>
 
         <TouchableOpacity style={styles.primaryBtn} onPress={handleSaveRoute} disabled={saving || sharing}>
@@ -501,6 +616,36 @@ const styles = StyleSheet.create({
   infoText: {
     color: "#d1d5db",
     fontSize: 12,
+  },
+  photosRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 10,
+  },
+  photoItemWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 10,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#334155",
+    position: "relative",
+  },
+  photoPreview: {
+    width: "100%",
+    height: "100%",
+  },
+  photoRemoveBtn: {
+    position: "absolute",
+    top: 4,
+    right: 4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "rgba(15,23,42,0.82)",
+    alignItems: "center",
+    justifyContent: "center",
   },
   primaryBtn: {
     marginTop: 14,

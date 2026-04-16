@@ -12,6 +12,7 @@ import {
   ImageBackground,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -47,9 +48,8 @@ export default function LoginScreen({ navigation }: any) {
   const [isResettingPassword, setIsResettingPassword] = useState(false);
   const hasNavigatedRef = useRef(false);
 
-  // 🔹 Controle da animação de foco
-  const emailFocus = new Animated.Value(0);
-  const passwordFocus = new Animated.Value(0);
+  const emailFocus = useRef(new Animated.Value(0)).current;
+  const passwordFocus = useRef(new Animated.Value(0)).current;
 
   const navigateToMain = useCallback(
     (source: string) => {
@@ -57,19 +57,17 @@ export default function LoginScreen({ navigation }: any) {
         console.log(`[auth] Skipping navigation from ${source} (already navigating/navigated)`);
         return;
       }
-      
+
       hasNavigatedRef.current = true;
       console.log(`[auth] Initiating navigation to MainTabs from source: ${source}`);
-      
+
       const performNavigation = () => {
         try {
           if (typeof navigation?.replace === "function") {
-            console.log("[auth] Using navigation.replace('MainTabs')");
             navigation.replace("MainTabs");
             return;
           }
           if (typeof navigation?.navigate === "function") {
-            console.log("[auth] Using navigation.navigate('MainTabs')");
             navigation.navigate("MainTabs");
             return;
           }
@@ -82,7 +80,6 @@ export default function LoginScreen({ navigation }: any) {
         }
       };
 
-      // Pequeno delay para garantir que o estado do Firebase está estável no Android
       if (Platform.OS === "android") {
         setTimeout(performNavigation, 300);
       } else {
@@ -93,9 +90,7 @@ export default function LoginScreen({ navigation }: any) {
   );
 
   useEffect(() => {
-    console.log("[auth] LoginScreen mounted");
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      console.log("[auth] Auth state observed on login screen:", user ? "authenticated" : "guest");
       if (user) {
         navigateToMain("auth-state-listener");
       }
@@ -127,7 +122,6 @@ export default function LoginScreen({ navigation }: any) {
 
     if (isSubmitting) return;
 
-    console.log("[auth] Login started");
     setIsSubmitting(true);
     setError("");
 
@@ -137,21 +131,16 @@ export default function LoginScreen({ navigation }: any) {
         LOGIN_ATTEMPT_TIMEOUT_MS,
         "Tempo de login excedido. Verifique sua conexão e tente novamente."
       );
-      console.log("[auth] Login completed");
-      console.log("[auth] Authenticated user:", userCredential.user.uid);
 
-      console.log("[auth] Profile loading started");
       try {
         await ensureUserProfileCompatibility({
           uid: userCredential.user.uid,
           email: userCredential.user.email || "",
         });
-        console.log("[auth] Profile loading finished");
-      } catch (profileError: any) {
-        console.error("[auth] Profile loading failed:", profileError);
+      } catch {
         Alert.alert(
           "Perfil parcialmente indisponível",
-          "O login foi concluído, mas houve falha ao carregar seu perfil. Você ainda pode entrar no app."
+          "O login foi concluído, mas houve falha ao carregar seu perfil."
         );
       }
 
@@ -160,17 +149,12 @@ export default function LoginScreen({ navigation }: any) {
       setPassword("");
       navigateToMain("login-success");
     } catch (err: any) {
-      console.error("[auth] Login error captured:", err);
       if (err.code === "auth/user-not-found") {
         setError("Usuário não encontrado.");
-        setEmail("");
-        setPassword("");
       } else if (err.code === "auth/wrong-password") {
         setError("Senha incorreta.");
-        setPassword("");
       } else if (err.code === "auth/invalid-email") {
         setError("E-mail inválido.");
-        setEmail("");
       } else if (err?.message === "Tempo de login excedido. Verifique sua conexão e tente novamente.") {
         setError(err.message);
       } else {
@@ -217,300 +201,234 @@ export default function LoginScreen({ navigation }: any) {
     );
   };
 
-  // 🔹 Estilo adicional apenas para Web (remove outline)
-  const webInputStyle = Platform.OS === "web" ? { outlineWidth: 0 } : {};
+  const webInputStyle = Platform.OS === "web" ? ({ outlineWidth: 0 } as any) : {};
 
   return (
-    <ImageBackground
-      source={require("../../assets/images/Azulao.png")}
-      style={styles.background}
-    >
+    <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
       <View style={styles.overlay}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={{ width: "100%" }}
-        >
-          <View style={styles.container}>
-            <Image
-              style={styles.logo}
-              source={require("../../assets/images/LogoTrack.png")}
-            />
+        <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.keyboardWrap}>
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.card}>
+              <Image style={styles.logo} source={require("../../assets/images/LogoTrack.png")} />
 
-            <Text style={styles.title}>Bem-vindo</Text>
-            <Text style={styles.subtitle}>Acesse sua conta para continuar</Text>
+              <Text style={styles.title}>Bem-vindo</Text>
+              <Text style={styles.subtitle}>Acesse sua conta para continuar</Text>
 
-            {/* Campo de E-mail */}
-            <Animated.View
-              style={[
-                styles.inputContainer,
-                {
-                  borderColor: emailFocus.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ["#FFFFFF", "#1e4db7"],
-                  }),
-                  shadowOpacity: emailFocus.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, 0.3],
-                  }),
-                },
-              ]}
-            >
-              <TextInput
-                style={[styles.input, webInputStyle]}
-                placeholder="E-mail"
-                placeholderTextColor="#CCCCCC"
-                keyboardType="email-address"
-                autoCapitalize="none"
-                underlineColorAndroid="transparent"
-                value={email}
-                onFocus={() => handleFocus(emailFocus)}
-                onBlur={() => handleBlur(emailFocus)}
-                onChangeText={(text) => {
-                  setEmail(text);
-                  if (error) setError("");
-                }}
-              />
-            </Animated.View>
-            {(error === "Usuário não encontrado." ||
-              error === "E-mail inválido.") && (
-              <Text style={styles.errorText}>{error}</Text>
-            )}
+              {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-            {/* Campo de Senha */}
-            <Animated.View
-              style={[
-                styles.passwordContainer,
-                {
-                  borderColor: passwordFocus.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ["#FFFFFF", "#1e4db7"],
-                  }),
-                  shadowOpacity: passwordFocus.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, 0.3],
-                  }),
-                },
-              ]}
-            >
-              <TextInput
-                style={[styles.passwordInput, webInputStyle]}
-                placeholder="Senha"
-                placeholderTextColor="#CCCCCC"
-                secureTextEntry={!showPassword}
-                underlineColorAndroid="transparent"
-                value={password}
-                onFocus={() => handleFocus(passwordFocus)}
-                onBlur={() => handleBlur(passwordFocus)}
-                onChangeText={(text) => {
-                  setPassword(text);
-                  if (error) setError("");
-                }}
-              />
-              <TouchableOpacity
-                onPress={() => setShowPassword(!showPassword)}
-                style={styles.eyeButton}
+              <Animated.View
+                style={[
+                  styles.inputContainer,
+                  {
+                    borderColor: emailFocus.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ["rgba(255,255,255,0.55)", "#60a5fa"],
+                    }),
+                  },
+                ]}
               >
-                <Ionicons
-                  name={showPassword ? "eye" : "eye-off"}
-                  size={22}
-                  color="#FFFFFF"
+                <Ionicons name="mail-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputStyle]}
+                  placeholder="E-mail"
+                  placeholderTextColor="#cbd5e1"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  underlineColorAndroid="transparent"
+                  value={email}
+                  onFocus={() => handleFocus(emailFocus)}
+                  onBlur={() => handleBlur(emailFocus)}
+                  onChangeText={(text) => {
+                    setEmail(text);
+                    if (error) setError("");
+                  }}
                 />
+              </Animated.View>
+
+              <Animated.View
+                style={[
+                  styles.inputContainer,
+                  {
+                    borderColor: passwordFocus.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: ["rgba(255,255,255,0.55)", "#60a5fa"],
+                    }),
+                  },
+                ]}
+              >
+                <Ionicons name="lock-closed-outline" size={18} color="#d1d5db" style={styles.inputIcon} />
+                <TextInput
+                  style={[styles.input, webInputStyle]}
+                  placeholder="Senha"
+                  placeholderTextColor="#cbd5e1"
+                  secureTextEntry={!showPassword}
+                  underlineColorAndroid="transparent"
+                  value={password}
+                  onFocus={() => handleFocus(passwordFocus)}
+                  onBlur={() => handleBlur(passwordFocus)}
+                  onChangeText={(text) => {
+                    setPassword(text);
+                    if (error) setError("");
+                  }}
+                />
+                <TouchableOpacity onPress={() => setShowPassword(!showPassword)} style={styles.eyeButton}>
+                  <Ionicons name={showPassword ? "eye" : "eye-off"} size={20} color="#e5e7eb" />
+                </TouchableOpacity>
+              </Animated.View>
+
+              <TouchableOpacity
+                style={[styles.primaryButton, isSubmitting && styles.buttonDisabled]}
+                onPress={handleLogin}
+                disabled={isSubmitting}
+              >
+                <Text style={styles.primaryButtonText}>{isSubmitting ? "ENTRANDO..." : "ENTRAR"}</Text>
               </TouchableOpacity>
-            </Animated.View>
-            {error === "Senha incorreta." && (
-              <Text style={styles.errorText}>{error}</Text>
-            )}
 
-            {(error === "Digite o e-mail e a senha." ||
-              error === "Erro ao fazer login.") && (
-              <Text style={styles.errorText}>{error}</Text>
-            )}
-            {error &&
-              error !== "Usuário não encontrado." &&
-              error !== "E-mail inválido." &&
-              error !== "Senha incorreta." &&
-              error !== "Digite o e-mail e a senha." &&
-              error !== "Erro ao fazer login." && (
-                <Text style={styles.errorText}>{error}</Text>
-              )}
+              <TouchableOpacity
+                style={styles.forgotPasswordButton}
+                onPress={handleForgotPassword}
+                disabled={isResettingPassword}
+              >
+                <Text style={styles.forgotPasswordText}>
+                  {isResettingPassword ? "ENVIANDO..." : "Esqueceu sua senha?"}
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[styles.primaryButton, isSubmitting && { opacity: 0.75 }]}
-              onPress={handleLogin}
-              disabled={isSubmitting}
-            >
-              <Text style={styles.primaryButtonText}>{isSubmitting ? "ENTRANDO..." : "ENTRAR"}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.forgotPasswordButton}
-              onPress={handleForgotPassword}
-              disabled={isResettingPassword}
-            >
-              <Text style={styles.forgotPasswordText}>
-                {isResettingPassword ? "ENVIANDO..." : "Esqueceu sua senha?"}
-              </Text>
-            </TouchableOpacity>
-
-            <View style={styles.socialSection}>
-              <Text style={styles.socialLabel}>Ou entre com</Text>
-              <View style={styles.socialButtonsRow}>
-                <TouchableOpacity
-                  style={styles.socialButton}
-                  onPress={() => handleSocialLoginPress("Facebook")}
-                >
-                  <Ionicons name="logo-facebook" size={20} color="#FFFFFF" />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.socialButton}
-                  onPress={() => handleSocialLoginPress("Instagram")}
-                >
-                  <Ionicons name="logo-instagram" size={20} color="#FFFFFF" />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.socialButton}
-                  onPress={() => handleSocialLoginPress("X")}
-                >
-                  <Ionicons name="logo-twitter" size={20} color="#FFFFFF" />
-                </TouchableOpacity>
+              <View style={styles.socialSection}>
+                <Text style={styles.socialLabel}>Ou entre com</Text>
+                <View style={styles.socialButtonsRow}>
+                  <TouchableOpacity style={styles.socialButton} onPress={() => handleSocialLoginPress("Facebook")}>
+                    <Ionicons name="logo-facebook" size={20} color="#FFFFFF" />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.socialButton} onPress={() => handleSocialLoginPress("Instagram")}>
+                    <Ionicons name="logo-instagram" size={20} color="#FFFFFF" />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.socialButton} onPress={() => handleSocialLoginPress("X")}>
+                    <Ionicons name="logo-twitter" size={20} color="#FFFFFF" />
+                  </TouchableOpacity>
+                </View>
               </View>
+
+              <TouchableOpacity style={styles.switchButton} onPress={() => navigation.navigate("Register")}>
+                <Text style={styles.switchText}>
+                  Não tem uma conta? <Text style={styles.switchLink}>Cadastre-se</Text>
+                </Text>
+              </TouchableOpacity>
             </View>
-
-            <TouchableOpacity
-  style={{ marginTop: 20 }}   // aumenta a distância do botão de entrar
-  onPress={() => navigation.navigate("Register")}
->
-  <Text style={styles.switchText}>
-    Não tem uma conta?{" "}
-    <Text style={styles.switchLink}>Cadastre-se</Text>
-  </Text>
-</TouchableOpacity>
-
-
-          </View>
+          </ScrollView>
         </KeyboardAvoidingView>
       </View>
     </ImageBackground>
   );
 }
 
-// 🔹 Estilos — sem propriedades inválidas (tudo 100% compatível com React Native)
 const styles = StyleSheet.create({
   background: {
     flex: 1,
-    resizeMode: "cover",
     width: "100%",
     height: "100%",
   },
-  linkText: {
-    color: "blue",
-    textDecorationLine: "underline" // opcional
-  },  
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.55)",
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 30,
+    backgroundColor: "rgba(1, 9, 23, 0.72)",
+    paddingHorizontal: 18,
   },
-  container: { width: "100%", alignItems: "center" },
-  logo: { width: 260, height: 260, marginBottom: 10, resizeMode: "contain" },
+  keyboardWrap: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+    paddingVertical: 24,
+  },
+  card: {
+    width: "100%",
+    maxWidth: 460,
+    alignSelf: "center",
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.28)",
+    backgroundColor: "rgba(2, 6, 23, 0.52)",
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 22,
+  },
+  logo: {
+    width: 160,
+    height: 160,
+    marginBottom: 8,
+    resizeMode: "contain",
+    alignSelf: "center",
+  },
   title: {
     color: "#FFFFFF",
-    fontSize: 25,
-    fontWeight: "bold",
-    marginBottom: 5,
+    fontSize: 28,
+    fontWeight: "800",
     textAlign: "center",
   },
   subtitle: {
-    color: "#DDDDDD",
+    color: "#dbeafe",
     fontSize: 14,
-    marginBottom: 25,
+    marginTop: 4,
+    marginBottom: 18,
     textAlign: "center",
   },
-
   inputContainer: {
     width: "100%",
-    height: 50,
+    minHeight: 52,
     borderWidth: 1.5,
-    borderColor: "#FFFFFF",
-    borderRadius: 25,
-    backgroundColor: "rgba(255,255,255,0.15)",
+    borderRadius: 14,
+    backgroundColor: "rgba(30, 41, 59, 0.75)",
     marginBottom: 12,
-    justifyContent: "center",
-    paddingHorizontal: 20,
-    shadowColor: "#1e4db7",
-  },
-
-  input: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    padding: 0,
-  },
-
-  passwordContainer: {
     flexDirection: "row",
     alignItems: "center",
-    width: "100%",
-    height: 50,
-    borderWidth: 1.5,
-    borderRadius: 25,
-    backgroundColor: "rgba(255,255,255,0.15)",
-    paddingHorizontal: 15,
-    shadowColor: "#1e4db7",
-    marginBottom: 10,
+    paddingHorizontal: 12,
   },
-
-  passwordInput: {
+  inputIcon: {
+    marginRight: 8,
+  },
+  input: {
     flex: 1,
     color: "#FFFFFF",
     fontSize: 16,
-    padding: 0,
+    paddingVertical: 0,
   },
-  eyeButton: { padding: 5 },
-
+  eyeButton: {
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+  },
   errorText: {
-    color: "#ff4444",
+    color: "#fda4af",
     fontSize: 13,
     marginBottom: 10,
-    alignSelf: "flex-start",
   },
-
-  switchText: {
-    color: "#fff",        // branco
-    fontSize: 14,
-    textAlign: "center",
-  },
-  
-  switchLink: {
-    color: "#1e4db7",     // azul igual ao que você já usa
-    fontWeight: "bold",
-  },
-  
-
   primaryButton: {
     width: "100%",
-    backgroundColor: "#1e4db7",
-    borderRadius: 25,
-    paddingVertical: 15,
+    backgroundColor: "#2563eb",
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: "center",
-    marginTop: 15,
-    elevation: 3,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
+    marginTop: 4,
+  },
+  buttonDisabled: {
+    opacity: 0.72,
   },
   primaryButtonText: {
     color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "bold",
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 0.4,
   },
   forgotPasswordButton: {
     marginTop: 12,
+    alignSelf: "center",
   },
   forgotPasswordText: {
-    color: "#dbeafe",
+    color: "#bfdbfe",
     fontSize: 13,
     textDecorationLine: "underline",
   },
@@ -519,29 +437,35 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   socialLabel: {
-    color: "#e5e7eb",
+    color: "#e2e8f0",
     fontSize: 13,
     marginBottom: 10,
   },
   socialButtonsRow: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 10,
   },
   socialButton: {
-    width: 40,
-    height: 40,
-    marginHorizontal: 5,
-    borderRadius: 20,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     borderWidth: 1,
-    borderColor: "#9ca3af",
+    borderColor: "rgba(148,163,184,0.5)",
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: "rgba(255,255,255,0.12)",
   },
-  secondaryButton: { marginTop: 20 },
-  secondaryButtonText: {
-    color: "#FFFFFF",
+  switchButton: {
+    marginTop: 18,
+  },
+  switchText: {
+    color: "#e2e8f0",
     fontSize: 14,
     textAlign: "center",
+  },
+  switchLink: {
+    color: "#60a5fa",
+    fontWeight: "800",
   },
 });

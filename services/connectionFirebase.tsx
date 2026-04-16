@@ -7,6 +7,7 @@ import {
   setPersistence,
 } from "firebase/auth";
 import { getDatabase, onValue, ref } from "firebase/database";
+import { getStorage } from "firebase/storage";
 import { Platform } from "react-native";
 
 const firebaseConfig = {
@@ -59,6 +60,7 @@ const createAuth = () => {
 
 export const auth = createAuth();
 export const database = getDatabase(app);
+export const storage = getStorage(app);
 
 const isDisconnectLikeError = (error: unknown) => {
   const message = String((error as any)?.message || "").toLowerCase();

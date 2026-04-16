@@ -404,7 +404,8 @@ export default function HomeScreen({ navigation }: any) {
 
   const loading = loadingRoutes || loadingAlerts;
   const tabSafeOffset = Math.max(insets.bottom, 12);
-  const floatingBottomBase = tabSafeOffset + 72;
+  // Reduzido para respeitar a margem já que a Tab Bar está escondida na tela de Mapa
+  const floatingBottomBase = tabSafeOffset + 8; 
   const handleOpenDrawer = () => {
     const parent = navigation.getParent?.();
     if (parent?.openDrawer) {

@@ -1,200 +1,307 @@
-import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute } from '@react-navigation/native';
-import { LinearGradient } from 'expo-linear-gradient';
-import React from 'react';
-import { Alert, ImageBackground, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
-import WeatherCard from '../components/WeatherCard';
-import { toCoordinateArray } from '../utils/geo';
+import { Ionicons } from "@expo/vector-icons";
+import { useNavigation, useRoute } from "@react-navigation/native";
+import React from "react";
+import {
+  Alert,
+  ImageBackground,
+  SafeAreaView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import WeatherCard from "../components/WeatherCard";
+import ActivityMapPreview from "../components/activity/ActivityMapPreview";
+import ElevationChart from "../components/activity/ElevationChart";
+import PaceChart from "../components/activity/PaceChart";
+import { ActivityPoint } from "../models/activity";
+import { buildElevationChartData, buildPaceChartData, ChartPoint } from "../utils/activityCharts";
+import { calculatePace, formatPace, formatSpeedKmh } from "../utils/activityMetrics";
+import { toCoordinateArray } from "../utils/geo";
 
 type ActivityViewScreenProps = {
-    navigation?: any;
-    route?: any;
+  navigation?: any;
+  route?: any;
 };
 
 export default function ActivityViewScreen(props: ActivityViewScreenProps) {
-    const hookRoute = useRoute<any>();
-    const hookNavigation = useNavigation<any>();
-    const route = props.route || hookRoute;
-    const navigation = props.navigation || hookNavigation;
-    const atividade: any = route.params?.atividade || {};
-    const routePoints = toCoordinateArray(atividade.rota);
+  const hookRoute = useRoute<any>();
+  const hookNavigation = useNavigation<any>();
+  const route = props.route || hookRoute;
+  const navigation = props.navigation || hookNavigation;
+  const atividade: any = route.params?.atividade || {};
+  const [focusedChartPoint, setFocusedChartPoint] = React.useState<ChartPoint | null>(null);
+  const routePoints = toCoordinateArray(atividade.rota);
+  const routeActivityPoints = React.useMemo<ActivityPoint[]>(
+    () =>
+      Array.isArray(atividade.rota)
+        ? atividade.rota
+            .filter((point: any) => Number.isFinite(point?.latitude) && Number.isFinite(point?.longitude))
+            .map((point: any, index: number) => ({
+              latitude: Number(point.latitude),
+              longitude: Number(point.longitude),
+              altitude: Number.isFinite(point.altitude) ? Number(point.altitude) : null,
+              timestamp:
+                Number(point.timestamp) ||
+                Date.now() + index * 5000,
+            }))
+        : [],
+    [atividade.rota]
+  );
+  const elevationChartPoints = React.useMemo(() => buildElevationChartData(routeActivityPoints), [routeActivityPoints]);
+  const paceChartPoints = React.useMemo(() => buildPaceChartData(routeActivityPoints), [routeActivityPoints]);
 
-    // Verifica se tem rota gravada válida
-    const hasRoute = routePoints.length > 0;
-    
-    // Pega o ponto inicial para centralizar o mapa
-    const initialRegion = hasRoute ? {
-        latitude: routePoints[0].latitude,
-        longitude: routePoints[0].longitude,
-        latitudeDelta: 0.015,
-        longitudeDelta: 0.015,
-    } : undefined;
+  const hasRoute = routePoints.length > 0;
 
-    // Formata os segundos vindos do Firebase para MM:SS
-    const formatarDuracao = (totalSegundos: number) => {
-        if (!totalSegundos) return "00:00";
-        const min = Math.floor(totalSegundos / 60);
-        const seg = totalSegundos % 60;
-        return `${min < 10 ? '0' : ''}${min}:${seg < 10 ? '0' : ''}${seg}`;
-    };
+  const durationSeconds = Number(atividade?.duracao || 0);
+  const distanceKm = Number(atividade?.distancia || 0);
+  const avgSpeedKmh =
+    typeof atividade?.velocidadeMediaKmh === "number"
+      ? atividade.velocidadeMediaKmh
+      : durationSeconds > 0
+        ? distanceKm / (durationSeconds / 3600)
+        : 0;
+  const avgPaceMinKm =
+    typeof atividade?.paceMedioMinKm === "number"
+      ? atividade.paceMedioMinKm
+      : calculatePace(distanceKm, durationSeconds);
+  const elevationGain = Number(atividade?.elevacaoGanhoM || 0);
+  const elevationLoss = Number(atividade?.elevacaoPerdaM || 0);
+  const altitudeMin =
+    typeof atividade?.altitudeMinM === "number" ? Number(atividade.altitudeMinM) : null;
+  const altitudeMax =
+    typeof atividade?.altitudeMaxM === "number" ? Number(atividade.altitudeMaxM) : null;
 
-    return (
-        <View style={styles.container}>
-            {/* CABEÇALHO COM MAPA OU IMAGEM */}
-            <View style={styles.headerContainer}>
-                {hasRoute ? (
-                    <MapView
-                        style={styles.map}
-                        provider={PROVIDER_DEFAULT}
-                        initialRegion={initialRegion}
-                        scrollEnabled={true}
-                        zoomEnabled={true}
-                    >
-                        <Polyline
-                            coordinates={routePoints}
-                            strokeColor="#ffd700" // Linha dourada premium
-                            strokeWidth={5}
-                        />
-                        <Marker coordinate={routePoints[0]} title="Início">
-                             <Ionicons name="location" size={40} color="#22c55e" />
-                        </Marker>
-                        <Marker coordinate={routePoints[routePoints.length - 1]} title="Fim">
-                             <Ionicons name="flag" size={40} color="#ef4444" />
-                        </Marker>
-                    </MapView>
-                ) : (
-                    <ImageBackground 
-                        source={require('../../assets/images/Azulao.png')} 
-                        style={styles.placeholderImage}
-                    >
-                        <View style={styles.noGpsOverlay}>
-                            <Ionicons name="map-outline" size={60} color="#ffd700" />
-                            <Text style={styles.noGpsText}>Trajeto GPS não registado</Text>
-                        </View>
-                    </ImageBackground>
-                )}
+  const formatDuration = (totalSeconds: number) => {
+    if (!totalSeconds) return "00:00";
+    const min = Math.floor(totalSeconds / 60);
+    const sec = Math.floor(totalSeconds % 60);
+    return `${min.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+  };
 
-                {/* Botão Voltar Flutuante */}
-                <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
-                    <Ionicons name="arrow-back" size={24} color="#fff" />
-                </TouchableOpacity>
+  return (
+    <SafeAreaView style={styles.container}>
+      <View style={styles.headerContainer}>
+        {hasRoute ? (
+          <ActivityMapPreview points={routePoints} highlightedPoint={focusedChartPoint?.coordinate || null} style={styles.map} />
+        ) : (
+          <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.placeholderImage}>
+            <View style={styles.noGpsOverlay}>
+              <Ionicons name="map-outline" size={56} color="#7dd3fc" />
+              <Text style={styles.noGpsText}>Trajeto GPS não registrado</Text>
             </View>
+          </ImageBackground>
+        )}
 
-            {/* DETALHES DA ATIVIDADE */}
-            <View style={styles.detailsContainer}>
-                <ScrollView showsVerticalScrollIndicator={false}>
-                    <View style={styles.titleRow}>
-                        <Text style={styles.activityTitle}>{atividade.tipo}</Text>
-                        <View style={styles.dateBadge}>
-                            <Text style={styles.activityDate}>{atividade.data}</Text>
-                        </View>
-                    </View>
+        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+          <Ionicons name="arrow-back" size={22} color="#fff" />
+        </TouchableOpacity>
+      </View>
 
-                    <View style={styles.statsGrid}>
-                        <View style={styles.statBox}>
-                            <Ionicons name="resize" size={20} color="#ffd700" style={{ marginBottom: 5 }} />
-                            <Text style={styles.statLabel}>Distância</Text>
-                            <Text style={styles.statValue}>{atividade.distancia ?? 0} <Text style={styles.unit}>km</Text></Text>
-                        </View>
-                        
-                        <View style={styles.divider} />
-                        
-                        <View style={styles.statBox}>
-                            <Ionicons name="time-outline" size={20} color="#ffd700" style={{ marginBottom: 5 }} />
-                            <Text style={styles.statLabel}>Duração</Text>
-                            <Text style={styles.statValue}>{formatarDuracao(atividade.duracao)}</Text>
-                        </View>
-                        
-                        <View style={styles.divider} />
-                        
-                        <View style={styles.statBox}>
-                            <Ionicons name="flash-outline" size={20} color="#ffd700" style={{ marginBottom: 5 }} />
-                            <Text style={styles.statLabel}>Ritmo</Text>
-                            <Text style={styles.statValue}>
-                                {atividade.distancia > 0 
-                                    ? ((atividade.duracao / 60) / atividade.distancia).toFixed(1) 
-                                    : '--'} <Text style={styles.unit}>/km</Text>
-                            </Text>
-                        </View>
-                    </View>
-
-                    <View style={styles.locationBox}>
-                         <View style={styles.iconCircle}>
-                             <Ionicons name="location" size={20} color="#000" />
-                         </View>
-                         <View>
-                            <Text style={styles.locationTitle}>Local de Registo</Text>
-                            <Text style={styles.locationText}>{atividade.cidade}</Text>
-                         </View>
-                    </View>
-
-                    {hasRoute ? (
-                        <WeatherCard
-                            latitude={routePoints[0].latitude}
-                            longitude={routePoints[0].longitude}
-                        />
-                    ) : (
-                        <View style={styles.noWeatherBox}>
-                            <Text style={styles.noWeatherText}>
-                                Clima indisponível: esta atividade não possui coordenadas de rota.
-                            </Text>
-                        </View>
-                    )}
-
-                    <TouchableOpacity style={styles.shareButton} onPress={() => Alert.alert("Em breve", "Partilha será disponibilizada em breve.")}>
-                        <LinearGradient colors={['#ffd700', '#ca8a04']} style={styles.gradientBtn}>
-                            <Ionicons name="share-social" size={22} color="#000" />
-                            <Text style={styles.shareText}>Partilhar Conquista</Text>
-                        </LinearGradient>
-                    </TouchableOpacity>
-
-                </ScrollView>
+      <View style={styles.detailsContainer}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollDetails}>
+          <View style={styles.titleRow}>
+            <Text style={styles.activityTitle}>{String(atividade?.tipo || "Atividade")}</Text>
+            <View style={styles.dateBadge}>
+              <Text style={styles.activityDate}>{String(atividade?.data || "Sem data")}</Text>
             </View>
-        </View>
-    );
+          </View>
+
+          <View style={styles.metricsCard}>
+            <View style={styles.metricItem}>
+              <Ionicons name="resize-outline" size={18} color="#7dd3fc" />
+              <Text style={styles.metricLabel}>Distância</Text>
+              <Text style={styles.metricValue}>{distanceKm.toFixed(2)} km</Text>
+            </View>
+            <View style={styles.metricDivider} />
+            <View style={styles.metricItem}>
+              <Ionicons name="time-outline" size={18} color="#7dd3fc" />
+              <Text style={styles.metricLabel}>Duração</Text>
+              <Text style={styles.metricValue}>{formatDuration(durationSeconds)}</Text>
+            </View>
+            <View style={styles.metricDivider} />
+            <View style={styles.metricItem}>
+              <Ionicons name="flash-outline" size={18} color="#7dd3fc" />
+              <Text style={styles.metricLabel}>Pace médio</Text>
+              <Text style={styles.metricValue}>{formatPace(avgPaceMinKm)}</Text>
+            </View>
+          </View>
+
+          <View style={styles.metricsCard}>
+            <View style={styles.metricItem}>
+              <Ionicons name="speedometer-outline" size={18} color="#7dd3fc" />
+              <Text style={styles.metricLabel}>Velocidade média</Text>
+              <Text style={styles.metricValue}>{formatSpeedKmh(avgSpeedKmh)}</Text>
+            </View>
+            <View style={styles.metricDivider} />
+            <View style={styles.metricItem}>
+              <Ionicons name="trending-up-outline" size={18} color="#7dd3fc" />
+              <Text style={styles.metricLabel}>Elevação +</Text>
+              <Text style={styles.metricValue}>{elevationGain.toFixed(0)} m</Text>
+            </View>
+            <View style={styles.metricDivider} />
+            <View style={styles.metricItem}>
+              <Ionicons name="trending-down-outline" size={18} color="#7dd3fc" />
+              <Text style={styles.metricLabel}>Elevação -</Text>
+              <Text style={styles.metricValue}>{elevationLoss.toFixed(0)} m</Text>
+            </View>
+          </View>
+
+          <View style={styles.locationBox}>
+            <Ionicons name="analytics-outline" size={18} color="#bfdbfe" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.locationTitle}>Altitude mínima / máxima</Text>
+              <Text style={styles.locationText}>
+                {altitudeMin !== null && altitudeMax !== null
+                  ? `${altitudeMin.toFixed(0)} m / ${altitudeMax.toFixed(0)} m`
+                  : "Não disponível para esta atividade"}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.locationBox}>
+            <Ionicons name="location-outline" size={18} color="#bfdbfe" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.locationTitle}>Local do registro</Text>
+              <Text style={styles.locationText}>{String(atividade?.cidade || "Não informado")}</Text>
+            </View>
+          </View>
+
+          <ElevationChart points={elevationChartPoints} onPointFocus={setFocusedChartPoint} />
+          <PaceChart points={paceChartPoints} onPointFocus={setFocusedChartPoint} />
+
+          {hasRoute ? (
+            <WeatherCard latitude={routePoints[0].latitude} longitude={routePoints[0].longitude} />
+          ) : (
+            <View style={styles.noWeatherBox}>
+              <Text style={styles.noWeatherText}>
+                Clima indisponível: esta atividade não possui coordenadas de rota.
+              </Text>
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={styles.shareButton}
+            onPress={() => Alert.alert("Em breve", "Partilha será disponibilizada em breve.")}
+          >
+            <Ionicons name="share-social-outline" size={18} color="#0f172a" />
+            <Text style={styles.shareText}>Compartilhar conquista</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+    </SafeAreaView>
+  );
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, backgroundColor: '#000' },
-    headerContainer: { height: '50%', width: '100%', position: 'relative' },
-    map: { ...StyleSheet.absoluteFillObject },
-    placeholderImage: { width: '100%', height: '100%' },
-    noGpsOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
-    noGpsText: { color: '#ffd700', fontSize: 18, marginTop: 10, fontWeight: 'bold' },
-    
-    backButton: { position: 'absolute', top: 50, left: 20, backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 50, borderWidth: 1, borderColor: '#333' },
-    
-    detailsContainer: { 
-        flex: 1, 
-        backgroundColor: '#121212', 
-        marginTop: -30, 
-        borderTopLeftRadius: 30, 
-        borderTopRightRadius: 30,
-        padding: 25,
-        paddingTop: 30,
-        elevation: 20
-    },
-    titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 25 },
-    activityTitle: { fontSize: 26, fontWeight: 'bold', color: '#fff', textTransform: 'capitalize' },
-    dateBadge: { backgroundColor: '#1e1e1e', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 15, borderWidth: 1, borderColor: '#333' },
-    activityDate: { fontSize: 14, color: '#ffd700', fontWeight: 'bold' },
-    
-    statsGrid: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#1e1e1e', padding: 20, borderRadius: 20, marginBottom: 25, borderWidth: 1, borderColor: '#333' },
-    statBox: { alignItems: 'center', flex: 1 },
-    statLabel: { color: '#888', fontSize: 12, marginBottom: 5, textTransform: 'uppercase', letterSpacing: 1 },
-    statValue: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
-    unit: { fontSize: 14, color: '#aaa', fontWeight: 'normal' },
-    divider: { width: 1, backgroundColor: '#333', marginVertical: 10 },
-
-    locationBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1e1e1e', padding: 15, borderRadius: 15, gap: 15, marginBottom: 30, borderWidth: 1, borderColor: '#333' },
-    iconCircle: { backgroundColor: '#ffd700', padding: 10, borderRadius: 50 },
-    locationTitle: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-    locationText: { color: '#aaa', marginTop: 2 },
-    noWeatherBox: { backgroundColor: '#1e1e1e', borderWidth: 1, borderColor: '#333', borderRadius: 15, padding: 14, marginBottom: 24 },
-    noWeatherText: { color: '#aaa', fontSize: 14 },
-
-    shareButton: { borderRadius: 15, overflow: 'hidden', elevation: 5 },
-    gradientBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 18, gap: 10 },
-    shareText: { color: '#000', fontSize: 16, fontWeight: 'bold' }
+  container: { flex: 1, backgroundColor: "#020617" },
+  headerContainer: { height: "44%", width: "100%", position: "relative" },
+  map: { ...StyleSheet.absoluteFillObject },
+  placeholderImage: { width: "100%", height: "100%" },
+  noGpsOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(2,6,23,0.74)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  noGpsText: { color: "#e2e8f0", fontSize: 16, marginTop: 10, fontWeight: "700" },
+  backButton: {
+    position: "absolute",
+    top: 14,
+    left: 16,
+    backgroundColor: "rgba(2, 6, 23, 0.72)",
+    padding: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.45)",
+  },
+  detailsContainer: {
+    flex: 1,
+    backgroundColor: "#0b1220",
+    marginTop: -24,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+  },
+  scrollDetails: {
+    paddingHorizontal: 18,
+    paddingTop: 20,
+    paddingBottom: 28,
+  },
+  titleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+  },
+  activityTitle: {
+    flex: 1,
+    fontSize: 24,
+    fontWeight: "800",
+    color: "#f8fafc",
+    textTransform: "capitalize",
+  },
+  dateBadge: {
+    backgroundColor: "rgba(56,189,248,0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(125,211,252,0.4)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  activityDate: { fontSize: 12, color: "#bae6fd", fontWeight: "700" },
+  metricsCard: {
+    flexDirection: "row",
+    alignItems: "stretch",
+    backgroundColor: "rgba(15, 23, 42, 0.75)",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.25)",
+    marginBottom: 14,
+    paddingVertical: 12,
+  },
+  metricItem: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingHorizontal: 6,
+  },
+  metricDivider: { width: 1, backgroundColor: "rgba(148,163,184,0.2)" },
+  metricLabel: { color: "#94a3b8", fontSize: 12 },
+  metricValue: { color: "#f8fafc", fontSize: 16, fontWeight: "800" },
+  locationBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(15,23,42,0.75)",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.22)",
+    padding: 14,
+    marginBottom: 14,
+  },
+  locationTitle: { color: "#e2e8f0", fontWeight: "700", fontSize: 14 },
+  locationText: { color: "#94a3b8", marginTop: 2, fontSize: 13 },
+  noWeatherBox: {
+    backgroundColor: "rgba(15,23,42,0.75)",
+    borderWidth: 1,
+    borderColor: "rgba(148,163,184,0.22)",
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+  },
+  noWeatherText: { color: "#94a3b8", fontSize: 13 },
+  shareButton: {
+    borderRadius: 14,
+    backgroundColor: "#7dd3fc",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    paddingVertical: 14,
+    marginTop: 2,
+  },
+  shareText: { color: "#0f172a", fontSize: 15, fontWeight: "800" },
 });

@@ -1,19 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import * as Location from "expo-location";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Alert, PanResponder, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import MapView, { Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import Animated, { FadeInDown, FadeOutDown, Layout, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
-import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
+import { buildSensorStats, readSensorLiveSample } from "../services/bleService";
 import {
   ActivityType,
   ActiveActivitySession,
@@ -22,17 +16,18 @@ import {
   finishActivityTracking,
   formatDuration,
   getActiveSession,
+  getAveragePaceMinPerKm,
   getAverageSpeedKmh,
   getSessionDurationSeconds,
+  getSessionRecordingStateLabel,
   pauseActivityTracking,
   resumeActivityTracking,
   startActivityTracking,
 } from "../services/activityTrackingService";
+import { formatPace, getPerformancePrimary } from "../utils/activityMetrics";
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
 
-type Coordinate = {
-  latitude: number;
-  longitude: number;
-};
+type Coordinate = { latitude: number; longitude: number };
 
 const ACTIVITY_OPTIONS: { label: string; value: ActivityType }[] = [
   { label: "Bike", value: "bike" },
@@ -49,10 +44,37 @@ const inferActivityType = (value?: string): ActivityType => {
   return "trilha";
 };
 
-type AtividadesScreenProps = {
-  navigation?: any;
-  route?: any;
-};
+type AtividadesScreenProps = { navigation?: any; route?: any };
+
+const ActivityMapView = memo(function ActivityMapView({
+  safeSuggestedPath,
+  trackedPath,
+  mapInitialRegion,
+  mapRef,
+}: {
+  safeSuggestedPath: Coordinate[];
+  trackedPath: Coordinate[];
+  mapInitialRegion: any;
+  mapRef: React.RefObject<MapView | null>;
+}) {
+  return (
+    <MapView
+      ref={mapRef}
+      style={styles.map}
+      provider={PROVIDER_DEFAULT}
+      initialRegion={mapInitialRegion}
+      showsUserLocation
+      showsMyLocationButton={false}
+    >
+      {safeSuggestedPath.length > 1 ? (
+        <Polyline coordinates={safeSuggestedPath} strokeColor="rgba(249,115,22,0.45)" strokeWidth={6} />
+      ) : null}
+      {trackedPath.length > 1 ? (
+        <Polyline coordinates={trackedPath} strokeColor="#fb7185" strokeWidth={5} />
+      ) : null}
+    </MapView>
+  );
+});
 
 export default function AtividadesScreen(props: AtividadesScreenProps) {
   const hookNavigation = useNavigation<any>();
@@ -60,37 +82,62 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const navigation = props.navigation || hookNavigation;
   const route = props.route || hookRoute;
   const insets = useSafeAreaInsets();
+  const { height: screenHeight } = useWindowDimensions();
   const rotaGuia = route.params?.rotaSugerida;
 
   const mapRef = useRef<MapView>(null);
   const foregroundSubscription = useRef<Location.LocationSubscription | null>(null);
   const syncInterval = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [activityType, setActivityType] = useState<ActivityType>(
-    inferActivityType(rotaGuia?.tipo)
-  );
+  const [activityType, setActivityType] = useState<ActivityType>(inferActivityType(rotaGuia?.tipo));
   const [session, setSession] = useState<ActiveActivitySession | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
-  const [statusMessage, setStatusMessage] = useState<string>("Pronto para iniciar.");
+  const [statusMessage, setStatusMessage] = useState("Pronto para iniciar.");
+  const [sensorSamples, setSensorSamples] = useState<{ timestamp: number; value: number }[]>([]);
+  const [focusMode, setFocusMode] = useState(false);
 
-  const trackedPath: Coordinate[] = useMemo(
-    () => toCoordinateArray(session?.points || []),
-    [session]
-  );
-
+  const trackedPath: Coordinate[] = useMemo(() => toCoordinateArray(session?.points || []), [session]);
   const durationSeconds = useMemo(() => getSessionDurationSeconds(session), [session]);
   const averageSpeed = useMemo(() => getAverageSpeedKmh(session), [session]);
+  const averagePace = useMemo(() => getAveragePaceMinPerKm(session), [session]);
+  const performancePrimary = useMemo(() => getPerformancePrimary(activityType, averageSpeed, averagePace), [activityType, averagePace, averageSpeed]);
+  const recordingStateLabel = useMemo(() => getSessionRecordingStateLabel(session), [session]);
+  const elevationGain = useMemo(() => Number(session?.elevation?.gainMeters || 0), [session]);
+  const elevationLoss = useMemo(() => Number(session?.elevation?.lossMeters || 0), [session]);
+  const altitudeMin = useMemo(() => (typeof session?.elevation?.minAltitude === "number" ? session.elevation.minAltitude : null), [session?.elevation?.minAltitude]);
+  const altitudeMax = useMemo(() => (typeof session?.elevation?.maxAltitude === "number" ? session.elevation.maxAltitude : null), [session?.elevation?.maxAltitude]);
+  const sensorStats = useMemo(() => buildSensorStats(sensorSamples), [sensorSamples]);
   const isRecording = session?.status === "recording";
+  const isPaused = session?.status === "paused_auto" || session?.status === "paused_manual";
   const hasActiveSession = !!session && session.status !== "finished";
   const safeSuggestedPath = useMemo(() => toCoordinateArray(rotaGuia?.rotaCompleta), [rotaGuia?.rotaCompleta]);
   const mapInitialRegion = useMemo(
-    () =>
-      getRegionWithFallback(
-        toCoordinate(rotaGuia?.startPoint) || trackedPath[0] || null,
-        FALLBACK_REGION,
-        { latitudeDelta: 0.05, longitudeDelta: 0.05 }
-      ),
+    () => getRegionWithFallback(toCoordinate(rotaGuia?.startPoint) || trackedPath[0] || null, FALLBACK_REGION, { latitudeDelta: 0.05, longitudeDelta: 0.05 }),
     [rotaGuia?.startPoint, trackedPath]
+  );
+
+  const focusProgress = useSharedValue(0);
+  useEffect(() => {
+    focusProgress.value = withTiming(focusMode ? 1 : 0, { duration: 260 });
+  }, [focusMode, focusProgress]);
+
+  const mapAnimatedStyle = useAnimatedStyle(() => ({
+    height: withTiming(screenHeight * (focusProgress.value > 0.5 ? 0.18 : 0.52), { duration: 260 }),
+  }));
+  const metricsAnimatedStyle = useAnimatedStyle(() => ({
+    height: withTiming(screenHeight * (focusProgress.value > 0.5 ? 0.82 : 0.48), { duration: 260 }),
+  }));
+
+  const dragHandleResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gestureState) => Math.abs(gestureState.dy) > 12,
+        onPanResponderRelease: (_, gestureState) => {
+          if (gestureState.dy < -40) setFocusMode(true);
+          if (gestureState.dy > 40) setFocusMode(false);
+        },
+      }),
+    []
   );
 
   const stopForegroundWatch = () => {
@@ -102,30 +149,20 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
   const startForegroundWatch = useCallback(async () => {
     stopForegroundWatch();
-
     try {
       foregroundSubscription.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: 4000,
-          distanceInterval: 10,
-        },
+        { accuracy: Location.Accuracy.Balanced, timeInterval: 4000, distanceInterval: 10 },
         async (location) => {
           try {
             const updated = await appendForegroundPoint({
               latitude: location.coords.latitude,
               longitude: location.coords.longitude,
+              altitude: typeof location.coords.altitude === "number" ? location.coords.altitude : null,
               timestamp: location.timestamp || Date.now(),
             });
-
             if (updated) {
               setSession(updated);
-              mapRef.current?.animateCamera({
-                center: {
-                  latitude: location.coords.latitude,
-                  longitude: location.coords.longitude,
-                },
-              });
+              mapRef.current?.animateCamera({ center: { latitude: location.coords.latitude, longitude: location.coords.longitude } });
             }
           } catch (error: any) {
             console.warn("[activity] appendForegroundPoint failed:", error?.message || String(error));
@@ -140,83 +177,57 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
   useEffect(() => {
     let mounted = true;
-    console.log("[activity] Bootstrap starting");
-
     const bootstrap = async () => {
-      // Safety timer
       const bootstrapTimeout = setTimeout(() => {
         if (loadingSession && mounted) {
-          console.warn("[activity] Bootstrap taking too long, releasing loader");
           setLoadingSession(false);
           setStatusMessage("Sincronização lenta, tente novamente se os dados não aparecerem.");
         }
       }, 10000);
 
       try {
-        console.log("[activity] Requesting foreground permissions");
         const foregroundPermission = await Location.requestForegroundPermissionsAsync();
         if (foregroundPermission.status !== "granted") {
-          console.warn("[activity] GPS permission denied");
           setStatusMessage("Permissão de localização necessária para gravar atividade.");
           setLoadingSession(false);
           clearTimeout(bootstrapTimeout);
           return;
         }
 
-        console.log("[activity] Getting initial position");
         const current = await Location.getCurrentPositionAsync({});
-        if (!mounted) {
-          clearTimeout(bootstrapTimeout);
-          return;
-        }
-        
+        if (!mounted) return;
         const startFocus = toCoordinate(rotaGuia?.startPoint) || toCoordinate(current.coords);
         if (startFocus) {
-          console.log("[activity] Focusing map at:", startFocus);
           mapRef.current?.animateCamera({ center: startFocus, zoom: 16 });
         }
 
-        console.log("[activity] Restoring active session if any");
         const active = await getActiveSession();
-        if (!mounted) {
-          clearTimeout(bootstrapTimeout);
-          return;
-        }
-
+        if (!mounted) return;
         if (active && active.status !== "finished") {
-          console.log("[activity] Session restored:", active.id);
           setSession(active);
           setActivityType(active.activityType);
           setStatusMessage(
-            active.status === "recording"
-              ? "Atividade em andamento recuperada."
-              : "Atividade pausada recuperada."
+            active.status === "recording" ? "Atividade em andamento recuperada." : active.status === "paused_auto" ? "Atividade em pausa automática." : "Atividade pausada manualmente."
           );
-
           if (active.trackingMode === "foreground" && active.status === "recording") {
             await startForegroundWatch();
           }
         }
       } catch (error: any) {
-        console.error("[activity] Bootstrap failed:", error?.message || String(error));
         setStatusMessage("Falha ao obter GPS inicial.");
+        console.error("[activity] Bootstrap failed:", error?.message || String(error));
       } finally {
-        if (mounted) {
-          setLoadingSession(false);
-          clearTimeout(bootstrapTimeout);
-        }
+        if (mounted) setLoadingSession(false);
+        clearTimeout(bootstrapTimeout);
       }
     };
 
     bootstrap();
-
     syncInterval.current = setInterval(() => {
       getActiveSession()
         .then((active) => {
           if (!mounted) return;
-          if (active && active.status !== "finished") {
-            setSession(active);
-          }
+          if (active && active.status !== "finished") setSession(active);
         })
         .catch((error: any) => {
           if (!mounted) return;
@@ -226,37 +237,42 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
     return () => {
       mounted = false;
-      if (syncInterval.current) {
-        clearInterval(syncInterval.current);
-      }
+      if (syncInterval.current) clearInterval(syncInterval.current);
       stopForegroundWatch();
     };
-  }, [rotaGuia?.startPoint, startForegroundWatch]);
+  }, [loadingSession, rotaGuia?.startPoint, startForegroundWatch]);
+
+  useEffect(() => {
+    if (!isRecording) return;
+    const sensorInterval = setInterval(async () => {
+      const sample = await readSensorLiveSample();
+      if (!sample) return;
+      setSensorSamples((current) => [...current.slice(-59), sample]);
+    }, 2000);
+    return () => clearInterval(sensorInterval);
+  }, [isRecording]);
 
   const handleStart = async () => {
     const user = auth.currentUser;
-    if (!user) {
-      Alert.alert("Erro", "Você precisa estar logado.");
-      return;
-    }
+    if (!user) return Alert.alert("Erro", "Você precisa estar logado.");
 
     try {
       const current = await Location.getCurrentPositionAsync({});
       const safeCurrent = toCoordinate(current.coords);
-      if (!safeCurrent && trackedPath.length === 0) {
-        throw new Error("Coordenadas iniciais inválidas.");
-      }
-
+      if (!safeCurrent && trackedPath.length === 0) throw new Error("Coordenadas iniciais inválidas.");
       const startPoint = trackedPath[trackedPath.length - 1] || (safeCurrent as Coordinate);
 
       const response = await startActivityTracking({
         userId: user.uid,
         activityType,
-        initialPoint: startPoint,
+        initialPoint: {
+          latitude: startPoint.latitude,
+          longitude: startPoint.longitude,
+          altitude: trackedPath.length > 0 ? null : typeof current.coords.altitude === "number" ? current.coords.altitude : null,
+        },
       });
 
       setSession(response.session);
-
       if (response.mode === "foreground") {
         await startForegroundWatch();
         setStatusMessage("Atividade iniciada. Rastreamento em tempo real ativo.");
@@ -271,14 +287,11 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
   const handlePauseOrResume = async () => {
     if (!hasActiveSession) return;
-
     if (isRecording) {
       try {
         const paused = await pauseActivityTracking();
         stopForegroundWatch();
-        if (paused) {
-          setSession(paused);
-        }
+        if (paused) setSession(paused);
         setStatusMessage("Atividade pausada.");
       } catch {
         Alert.alert("Erro", "Não foi possível pausar.");
@@ -289,7 +302,6 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
     try {
       const response = await resumeActivityTracking();
       if (!response) return;
-
       setSession(response.session);
       if (response.mode === "foreground") {
         await startForegroundWatch();
@@ -302,39 +314,29 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
     }
   };
 
-  const handleMainAction = async () => {
-    if (!hasActiveSession) {
-      await handleStart();
-      return;
-    }
-
+  const handleFinishAction = async () => {
+    if (!hasActiveSession) return;
     try {
       stopForegroundWatch();
       const finished = await finishActivityTracking();
-
       if (finished.points.length < 2 || getSessionDurationSeconds(finished) < 10) {
-        Alert.alert(
-          "Atividade muito curta",
-          "Não há dados suficientes para gerar uma rota. Deseja descartar?",
-          [
-            { text: "Cancelar", style: "cancel" },
-            {
-              text: "Descartar",
-              style: "destructive",
-              onPress: async () => {
-                try {
-                  await discardActiveSession();
-                  setSession(null);
-                } catch (error: any) {
-                  Alert.alert("Erro", error?.message || "Não foi possível descartar a atividade.");
-                }
-              },
+        Alert.alert("Atividade muito curta", "Não há dados suficientes para gerar uma rota. Deseja descartar?", [
+          { text: "Cancelar", style: "cancel" },
+          {
+            text: "Descartar",
+            style: "destructive",
+            onPress: async () => {
+              try {
+                await discardActiveSession();
+                setSession(null);
+              } catch (error: any) {
+                Alert.alert("Erro", error?.message || "Não foi possível descartar a atividade.");
+              }
             },
-          ]
-        );
+          },
+        ]);
         return;
       }
-
       navigation.navigate("ActivitySummary", { session: finished });
     } catch (error: any) {
       Alert.alert("Erro", error?.message || "Não foi possível finalizar.");
@@ -343,17 +345,12 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
   const handleExit = () => {
     if (isRecording) {
-      Alert.alert(
-        "Atividade em andamento",
-        "Deseja sair e continuar gravando em background?",
-        [
-          { text: "Cancelar", style: "cancel" },
-          { text: "Sair", onPress: () => navigation.goBack() },
-        ]
-      );
+      Alert.alert("Atividade em andamento", "Deseja sair e continuar gravando em background?", [
+        { text: "Cancelar", style: "cancel" },
+        { text: "Sair", onPress: () => navigation.goBack() },
+      ]);
       return;
     }
-
     navigation.navigate("Mapa");
   };
 
@@ -362,28 +359,12 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
       const permission = await Location.getForegroundPermissionsAsync();
       if (permission.status !== "granted") {
         const requested = await Location.requestForegroundPermissionsAsync();
-        if (requested.status !== "granted") {
-          Alert.alert("Permissão necessária", "Permita localização para centralizar o mapa.");
-          return;
-        }
+        if (requested.status !== "granted") return Alert.alert("Permissão necessária", "Permita localização para centralizar o mapa.");
       }
-
-      const current = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Balanced,
-      });
+      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const safeCurrent = toCoordinate(current.coords);
-      if (!safeCurrent) {
-        Alert.alert("Localização indisponível", "Coordenadas inválidas retornadas pelo GPS.");
-        return;
-      }
-
-      mapRef.current?.animateCamera(
-        {
-          center: safeCurrent,
-          zoom: 17,
-        },
-        { duration: 450 }
-      );
+      if (!safeCurrent) return Alert.alert("Localização indisponível", "Coordenadas inválidas retornadas pelo GPS.");
+      mapRef.current?.animateCamera({ center: safeCurrent, zoom: 17 }, { duration: 450 });
     } catch {
       Alert.alert("Localização indisponível", "Não foi possível centralizar no local atual.");
     }
@@ -400,140 +381,139 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
   return (
     <View style={styles.container}>
-      <View style={styles.mapSection}>
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          provider={PROVIDER_DEFAULT}
-          initialRegion={mapInitialRegion}
-          showsUserLocation
-          showsMyLocationButton={false}
-        >
-          {safeSuggestedPath.length > 1 ? (
-            <Polyline coordinates={safeSuggestedPath} strokeColor="rgba(249,115,22,0.45)" strokeWidth={6} />
-          ) : null}
+      <Animated.View style={[styles.mapSection, mapAnimatedStyle]}>
+        <ActivityMapView
+          safeSuggestedPath={safeSuggestedPath}
+          trackedPath={trackedPath}
+          mapInitialRegion={mapInitialRegion}
+          mapRef={mapRef}
+        />
 
-          {trackedPath.length > 1 ? (
-            <Polyline coordinates={trackedPath} strokeColor="#fb7185" strokeWidth={5} />
-          ) : null}
-        </MapView>
-
-        <View style={[styles.mapTopRow, { top: insets.top + 8 }]}> 
+        <View style={[styles.mapTopRow, { top: insets.top + 8 }]}>
           <Pressable style={styles.topIconButton} onPress={handleExit}>
             <Ionicons name="arrow-back" size={20} color="#f8fafc" />
           </Pressable>
-
           <View style={styles.statusWrap}>
             <Text style={styles.statusTitle}>{isRecording ? "Atividade em andamento" : "Painel de atividade"}</Text>
-            <Text style={styles.statusDescription} numberOfLines={1}>{statusMessage}</Text>
+            <Text style={styles.statusDescription} numberOfLines={1}>
+              {statusMessage}
+            </Text>
+            <Text style={styles.statusState}>{recordingStateLabel}</Text>
           </View>
         </View>
 
-        <Pressable
-          style={[styles.locateButton, { bottom: 14 + Math.max(insets.bottom, 0) }]}
-          onPress={handleCenterOnCurrentLocation}
-        >
+        <Pressable style={[styles.locateButton, { bottom: 14 + Math.max(insets.bottom, 0) }]} onPress={handleCenterOnCurrentLocation}>
           <Ionicons name="locate" size={22} color="#f8fafc" />
         </Pressable>
-      </View>
+      </Animated.View>
 
-      <View style={[styles.metricsSection, { paddingBottom: insets.bottom + 12 }]}> 
-        {!hasActiveSession ? (
-          <View style={styles.activityTypeRow}>
-            {ACTIVITY_OPTIONS.map((option) => {
-              const selected = activityType === option.value;
-              return (
-                <Pressable
-                  key={option.value}
-                  style={[styles.typeChip, selected ? styles.typeChipActive : null]}
-                  onPress={() => setActivityType(option.value)}
-                >
-                  <Text style={[styles.typeChipText, selected ? styles.typeChipTextActive : null]}>{option.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : null}
-
-        <View style={styles.metricsRow}>
-          <View style={styles.metricCardLarge}>
-            <Text style={styles.metricLabel}>Tempo</Text>
-            <Text style={styles.metricValueLarge}>{formatDuration(durationSeconds)}</Text>
-          </View>
-
-          <View style={styles.metricCardLarge}>
-            <Text style={styles.metricLabel}>Distância</Text>
-            <Text style={styles.metricValueLarge}>{session?.distanceKm.toFixed(2) || "0.00"} km</Text>
-          </View>
-        </View>
-
-        <View style={styles.metricCardSmall}>
-          <Text style={styles.metricLabel}>Velocidade média</Text>
-          <Text style={styles.metricValueSmall}>{averageSpeed.toFixed(1)} km/h</Text>
-        </View>
-
-        <Pressable
-          style={({ pressed }) => [
-            styles.mainActionButton,
-            hasActiveSession ? styles.finishAction : styles.startAction,
-            pressed ? styles.buttonPressed : null,
-          ]}
-          onPress={handleMainAction}
-        >
-          <Ionicons name={hasActiveSession ? "stop" : "play"} size={22} color="#fff" />
-          <Text style={styles.mainActionText}>
-            {hasActiveSession ? "Finalizar atividade" : "Iniciar atividade"}
-          </Text>
-        </Pressable>
-
-        {hasActiveSession ? (
-          <Pressable
-            style={({ pressed }) => [styles.secondaryActionButton, pressed ? styles.buttonPressed : null]}
-            onPress={handlePauseOrResume}
-          >
-            <Ionicons name={isRecording ? "pause" : "play"} size={18} color="#e2e8f0" />
-            <Text style={styles.secondaryActionText}>
-              {isRecording ? "Pausar" : "Retomar"}
-            </Text>
+      <Animated.View style={[styles.metricsSection, metricsAnimatedStyle]}>
+        <View style={styles.dragHandleWrap} {...dragHandleResponder.panHandlers}>
+          <View style={styles.dragHandle} />
+          <Pressable onPress={() => setFocusMode((current) => !current)}>
+            <Text style={styles.dragHint}>{focusMode ? "Mostrar mapa" : "Arraste para cima para foco em métricas"}</Text>
           </Pressable>
-        ) : null}
-      </View>
+        </View>
+
+        <ScrollView contentContainerStyle={[styles.metricsContent, { paddingBottom: 16 }]} showsVerticalScrollIndicator={false}>
+          {!hasActiveSession ? (
+            <View style={styles.activityTypeRow}>
+              {ACTIVITY_OPTIONS.map((option) => {
+                const selected = activityType === option.value;
+                return (
+                  <Pressable key={option.value} style={[styles.typeChip, selected ? styles.typeChipActive : null]} onPress={() => setActivityType(option.value)}>
+                    <Text style={[styles.typeChipText, selected ? styles.typeChipTextActive : null]}>{option.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+
+          <View style={styles.metricsRow}>
+            <View style={styles.metricCardLarge}>
+              <Text style={styles.metricLabel}>Tempo</Text>
+              <Text style={styles.metricValueLarge}>{formatDuration(durationSeconds)}</Text>
+            </View>
+            <View style={styles.metricCardLarge}>
+              <Text style={styles.metricLabel}>Distância</Text>
+              <Text style={styles.metricValueLarge}>{session?.distanceKm.toFixed(2) || "0.00"} km</Text>
+            </View>
+          </View>
+
+          <View style={styles.metricCardSmall}>
+            <Text style={styles.metricLabel}>{performancePrimary.label}</Text>
+            <Text style={styles.metricValueSmall}>{performancePrimary.value}</Text>
+            <Text style={styles.metricHint}>Pace médio: {formatPace(averagePace)}</Text>
+          </View>
+
+          <View style={styles.metricsRow}>
+            <View style={styles.metricCardLarge}>
+              <Text style={styles.metricLabel}>Ganho elevação</Text>
+              <Text style={styles.metricValueSmall}>{elevationGain.toFixed(0)} m</Text>
+            </View>
+            <View style={styles.metricCardLarge}>
+              <Text style={styles.metricLabel}>Perda elevação</Text>
+              <Text style={styles.metricValueSmall}>{elevationLoss.toFixed(0)} m</Text>
+            </View>
+          </View>
+
+          <View style={styles.metricCardSmall}>
+            <Text style={styles.metricLabel}>Altitude (mín/máx)</Text>
+            <Text style={styles.metricValueSmall}>
+              {altitudeMin !== null && altitudeMax !== null ? `${altitudeMin.toFixed(0)} m / ${altitudeMax.toFixed(0)} m` : "Sem sinal de altitude"}
+            </Text>
+          </View>
+
+          <View style={styles.metricCardSmall}>
+            <Text style={styles.metricLabel}>Sensor associado</Text>
+            <Text style={styles.metricValueSmall}>
+              {sensorStats.samples.length > 0 ? `média ${sensorStats.average.toFixed(0)} • pico ${sensorStats.max.toFixed(0)}` : "Sem leitura ativa"}
+            </Text>
+          </View>
+        </ScrollView>
+
+        <View style={[styles.actionsDock, { paddingBottom: Math.max(insets.bottom, 16) }]}>
+          {!hasActiveSession ? (
+            <Pressable style={({ pressed }) => [styles.mainActionButton, styles.startAction, pressed ? styles.buttonPressed : null]} onPress={handleStart}>
+              <Ionicons name="play" size={22} color="#fff" />
+              <Text style={styles.mainActionText}>Iniciar atividade</Text>
+            </Pressable>
+          ) : null}
+
+          {hasActiveSession && isRecording ? (
+            <Animated.View entering={FadeInDown.duration(180)} exiting={FadeOutDown.duration(120)} layout={Layout.springify()}>
+              <Pressable style={({ pressed }) => [styles.mainActionButton, styles.pauseAction, pressed ? styles.buttonPressed : null]} onPress={handlePauseOrResume}>
+                <Ionicons name="pause" size={20} color="#fff" />
+                <Text style={styles.mainActionText}>Pausar gravação</Text>
+              </Pressable>
+            </Animated.View>
+          ) : null}
+
+          {hasActiveSession && isPaused ? (
+            <Animated.View entering={FadeInDown.duration(220)} exiting={FadeOutDown.duration(140)} layout={Layout.springify()} style={styles.pausedActionsRow}>
+              <Pressable style={({ pressed }) => [styles.splitActionBtn, styles.resumeAction, pressed ? styles.buttonPressed : null]} onPress={handlePauseOrResume}>
+                <Ionicons name="play" size={18} color="#fff" />
+                <Text style={styles.splitActionText}>Continuar</Text>
+              </Pressable>
+              <Pressable style={({ pressed }) => [styles.splitActionBtn, styles.finishAction, pressed ? styles.buttonPressed : null]} onPress={handleFinishAction}>
+                <Ionicons name="stop" size={18} color="#fff" />
+                <Text style={styles.splitActionText}>Finalizar</Text>
+              </Pressable>
+            </Animated.View>
+          ) : null}
+        </View>
+      </Animated.View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#020617",
-  },
-  loadingContainer: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#020617",
-  },
-  loadingText: {
-    marginTop: 10,
-    color: "#cbd5e1",
-    fontSize: 14,
-  },
-  mapSection: {
-    flex: 1.15,
-    position: "relative",
-    overflow: "hidden",
-  },
-  map: {
-    ...StyleSheet.absoluteFillObject,
-  },
-  mapTopRow: {
-    position: "absolute",
-    left: 12,
-    right: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
+  container: { flex: 1, backgroundColor: "#020617" },
+  loadingContainer: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: "#020617" },
+  loadingText: { marginTop: 10, color: "#cbd5e1", fontSize: 14 },
+  mapSection: { position: "relative", overflow: "hidden" },
+  map: { ...StyleSheet.absoluteFillObject },
+  mapTopRow: { position: "absolute", left: 12, right: 12, flexDirection: "row", alignItems: "center", gap: 10 },
   topIconButton: {
     width: 40,
     height: 40,
@@ -553,16 +533,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
-  statusTitle: {
-    color: "#f8fafc",
-    fontSize: 13,
-    fontWeight: "700",
-  },
-  statusDescription: {
-    marginTop: 2,
-    color: "#cbd5e1",
-    fontSize: 12,
-  },
+  statusTitle: { color: "#f8fafc", fontSize: 13, fontWeight: "700" },
+  statusDescription: { marginTop: 2, color: "#cbd5e1", fontSize: 12 },
+  statusState: { marginTop: 4, color: "#7dd3fc", fontSize: 11, fontWeight: "700", textTransform: "capitalize" },
   locateButton: {
     position: "absolute",
     right: 14,
@@ -576,19 +549,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     elevation: 8,
   },
-  metricsSection: {
-    flex: 0.95,
-    backgroundColor: "#0f172a",
+  metricsSection: { backgroundColor: "#0f172a" },
+  dragHandleWrap: { alignItems: "center", paddingTop: 8, paddingBottom: 2, backgroundColor: "#0f172a" },
+  dragHandle: { width: 42, height: 5, borderRadius: 999, backgroundColor: "#334155", marginBottom: 4 },
+  dragHint: { color: "#64748b", fontSize: 11, fontWeight: "600" },
+  metricsContent: { paddingHorizontal: 14, paddingTop: 14, gap: 10 },
+  actionsDock: {
     paddingHorizontal: 14,
-    paddingTop: 14,
+    paddingTop: 8,
+    backgroundColor: "#0f172a",
+    borderTopWidth: 1,
+    borderTopColor: "#1f2937",
   },
-  activityTypeRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "center",
-    gap: 8,
-    marginBottom: 12,
-  },
+  activityTypeRow: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8, marginBottom: 12 },
   typeChip: {
     borderWidth: 1,
     borderColor: "#334155",
@@ -597,22 +570,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
-  typeChipActive: {
-    borderColor: "#f97316",
-    backgroundColor: "rgba(249,115,22,0.18)",
-  },
-  typeChipText: {
-    color: "#cbd5e1",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  typeChipTextActive: {
-    color: "#f97316",
-  },
-  metricsRow: {
-    flexDirection: "row",
-    gap: 10,
-  },
+  typeChipActive: { borderColor: "#f97316", backgroundColor: "rgba(249,115,22,0.18)" },
+  typeChipText: { color: "#cbd5e1", fontSize: 12, fontWeight: "700" },
+  typeChipTextActive: { color: "#f97316" },
+  metricsRow: { flexDirection: "row", gap: 10 },
   metricCardLarge: {
     flex: 1,
     borderWidth: 1,
@@ -623,7 +584,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   metricCardSmall: {
-    marginTop: 10,
     borderWidth: 1,
     borderColor: "#334155",
     borderRadius: 14,
@@ -640,18 +600,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 6,
   },
-  metricValueLarge: {
-    color: "#f8fafc",
-    fontSize: 24,
-    fontWeight: "800",
-  },
-  metricValueSmall: {
-    color: "#f8fafc",
-    fontSize: 18,
-    fontWeight: "700",
-  },
+  metricValueLarge: { color: "#f8fafc", fontSize: 24, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  metricValueSmall: { color: "#f8fafc", fontSize: 18, fontWeight: "700", fontVariant: ["tabular-nums"] },
+  metricHint: { marginTop: 4, color: "#94a3b8", fontSize: 11, fontVariant: ["tabular-nums"] },
   mainActionButton: {
-    marginTop: 14,
     minHeight: 56,
     borderRadius: 16,
     flexDirection: "row",
@@ -660,36 +612,21 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 16,
   },
-  startAction: {
-    backgroundColor: "#16a34a",
-  },
-  finishAction: {
-    backgroundColor: "#dc2626",
-  },
-  mainActionText: {
-    color: "#fff",
-    fontSize: 17,
-    fontWeight: "800",
-  },
-  secondaryActionButton: {
-    marginTop: 10,
-    minHeight: 44,
+  startAction: { backgroundColor: "#16a34a" },
+  pauseAction: { backgroundColor: "#ea580c" },
+  resumeAction: { backgroundColor: "#16a34a" },
+  finishAction: { backgroundColor: "#dc2626" },
+  mainActionText: { color: "#fff", fontSize: 17, fontWeight: "800" },
+  pausedActionsRow: { flexDirection: "row", gap: 10 },
+  splitActionBtn: {
+    flex: 1,
+    minHeight: 50,
     borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#334155",
-    backgroundColor: "#1e293b",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: 8,
+    gap: 7,
   },
-  secondaryActionText: {
-    color: "#e2e8f0",
-    fontSize: 14,
-    fontWeight: "700",
-  },
-  buttonPressed: {
-    opacity: 0.86,
-    transform: [{ scale: 0.98 }],
-  },
+  splitActionText: { color: "#fff", fontSize: 15, fontWeight: "800" },
+  buttonPressed: { opacity: 0.82 },
 });

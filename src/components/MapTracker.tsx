@@ -1,277 +1,367 @@
-import * as Location from 'expo-location';
-import React, { useEffect, useRef, useState } from 'react';
-import { Alert, Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from '../utils/geo';
+import { Ionicons } from "@expo/vector-icons";
+import * as Location from "expo-location";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Dimensions, Pressable, StyleSheet, Text, View, ActivityIndicator } from "react-native";
+import { PanGestureHandler } from "react-native-gesture-handler";
+import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import Animated, {
+  useAnimatedGestureHandler,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
+import { formatPace, calculatePace } from "../utils/activityMetrics";
+
+const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+const MIN_PANEL_HEIGHT = 200;
+const MAX_PANEL_HEIGHT = SCREEN_HEIGHT * 0.8;
 
 interface MapTrackerProps {
   onFinish: (data: { coordinates: any[]; distance: number; duration: number }) => void;
   onCancel: () => void;
 }
 
+type Coordinate = { latitude: number; longitude: number };
+
+const calcDistanceKm = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * (Math.PI / 180)) *
+      Math.cos(lat2 * (Math.PI / 180)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+// Componente de Cronômetro isolado para não re-renderizar o mapa
+const TimerDisplay = memo(function TimerDisplay({ startedAt }: { startedAt: number }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Math.max(0, Date.now() - startedAt));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [startedAt]);
+
+  const formatElapsed = (ms: number) => {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  return <Text style={styles.timerText}>{formatElapsed(elapsed)}</Text>;
+});
+
+const TrackerMapView = memo(function TrackerMapView({
+  currentLocation,
+  routeCoordinates,
+  mapRef,
+}: {
+  currentLocation: Coordinate | null;
+  routeCoordinates: Coordinate[];
+  mapRef: React.RefObject<MapView | null>;
+}) {
+  const initialRegion = useMemo(() => getRegionWithFallback(currentLocation, FALLBACK_REGION, {
+    latitudeDelta: 0.005,
+    longitudeDelta: 0.005,
+  }), []); 
+
+  if (!currentLocation) {
+    return (
+      <View style={styles.mapFallback}>
+        <ActivityIndicator size="large" color="#f97316" />
+        <Text style={styles.mapFallbackText}>Sincronizando satélites...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <MapView
+      ref={mapRef}
+      style={StyleSheet.absoluteFill}
+      provider={PROVIDER_DEFAULT}
+      initialRegion={initialRegion}
+      showsUserLocation
+      showsMyLocationButton={false}
+      showsCompass={false}
+    >
+      <Polyline coordinates={routeCoordinates} strokeColor="#f43f5e" strokeWidth={6} />
+      {routeCoordinates.length > 0 && (
+        <Marker coordinate={routeCoordinates[0]} anchor={{ x: 0.5, y: 0.5 }}>
+          <View style={styles.startDot} />
+        </Marker>
+      )}
+    </MapView>
+  );
+});
+
 export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
   const insets = useSafeAreaInsets();
-  const [routeCoordinates, setRouteCoordinates] = useState<{ latitude: number; longitude: number }[]>([]);
-  const [currentLocation, setCurrentLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
+  const [currentLocation, setCurrentLocation] = useState<Coordinate | null>(null);
   const [distance, setDistance] = useState(0);
-  const [seconds, setSeconds] = useState(0);
-  const [mapError, setMapError] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
+  
   const mapRef = useRef<MapView>(null);
   const locationSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const startedAtRef = useRef<number>(Date.now());
+  const pausedAtRef = useRef<number | null>(null);
+  const totalPausedTimeRef = useRef<number>(0);
 
-  // Timer
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setSeconds((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+  const panelY = useSharedValue(0);
 
-  // Solicitar Permissão e Iniciar Rastreamento
+  const gestureHandler = useAnimatedGestureHandler({
+  onStart: (_, ctx: any) => {
+    ctx.startY = panelY.value;
+  },
+  onActive: (event, ctx) => {
+    panelY.value = ctx.startY + event.translationY;
+  },
+  onEnd: (event) => {
+    if (event.velocityY < -500 || event.translationY < -100) {
+      panelY.value = withSpring(-MAX_PANEL_HEIGHT + MIN_PANEL_HEIGHT + 40);
+    } else if (event.velocityY > 500 || event.translationY > 100) {
+      panelY.value = withSpring(0);
+    } else {
+      panelY.value = withSpring(panelY.value < -200 ? -MAX_PANEL_HEIGHT + MIN_PANEL_HEIGHT + 40 : 0);
+    }
+  },
+  });
+
+  const animatedPanelStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: panelY.value }],
+  }));
+
+  const animatedOverlayStyle = useAnimatedStyle(() => ({
+    opacity: withTiming(panelY.value < -100 ? 0.8 : 0, { duration: 200 }),
+  }));
+
   useEffect(() => {
     let mounted = true;
 
     (async () => {
       try {
-        console.log("[map-tracker] Checking foreground permissions");
         const { status } = await Location.requestForegroundPermissionsAsync();
-
-        if (status !== 'granted') {
-          console.warn("[map-tracker] GPS permission denied");
-          setMapError('Permissão de localização negada.');
-          Alert.alert('Permissão negada', 'Precisamos do GPS para rastrear sua trilha.');
-          return;
-        }
-
-        console.log("[map-tracker] Getting current position for map init");
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced,
-        });
-        
-        if (!mounted) return;
-        
-        const safeInitial = toCoordinate(location.coords);
-        if (!safeInitial) {
-          console.error("[map-tracker] Invalid initial coordinates received:", location.coords);
-          setMapError('Coordenadas iniciais inválidas.');
-          return;
-        }
-
-        console.log("[map-tracker] Map starting at:", safeInitial);
-        setCurrentLocation(safeInitial);
-        setMapError(null);
+        if (status !== "granted") return;
 
         locationSubscriptionRef.current = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.High,
-            timeInterval: 2000,
-            distanceInterval: 5,
+            timeInterval: 3000,
+            distanceInterval: 6,
           },
           (loc) => {
-            if (!mounted) return;
-            const newCoordinate = toCoordinate(loc.coords);
-            if (!newCoordinate) return;
+            if (!mounted || isPaused) return;
+            const nextPoint = toCoordinate(loc.coords);
+            if (!nextPoint) return;
 
-            console.log("[map-tracker] GPS update received");
-            setRouteCoordinates((prevRoute) => {
-              const newRoute = [...prevRoute, newCoordinate];
-              if (prevRoute.length > 0) {
-                const lastPoint = prevRoute[prevRoute.length - 1];
-                const dist = calcDistance(
-                  lastPoint.latitude,
-                  lastPoint.longitude,
-                  newCoordinate.latitude,
-                  newCoordinate.longitude
-                );
-                setDistance((d) => d + dist);
+            setRouteCoordinates((prev) => {
+              if (prev.length > 0) {
+                const last = prev[prev.length - 1];
+                const d = calcDistanceKm(last.latitude, last.longitude, nextPoint.latitude, nextPoint.longitude);
+                if (d > 0.005) { 
+                   setDistance(curr => curr + d);
+                   return [...prev, nextPoint];
+                }
+                return prev;
               }
-              return newRoute;
+              return [nextPoint];
             });
 
-            setCurrentLocation(newCoordinate);
-            mapRef.current?.animateCamera({ center: newCoordinate, zoom: 17 });
+            setCurrentLocation(nextPoint);
+            mapRef.current?.animateCamera({ center: nextPoint });
           }
         );
-      } catch (error: any) {
-        if (!mounted) return;
-        console.error("[map-tracker] Initialization error:", error?.message || String(error));
-        setMapError('Falha ao iniciar GPS em tempo real.');
-        Alert.alert('Erro de localização', 'Não foi possível iniciar o rastreamento por GPS.');
+      } catch (e) {
+        console.warn("[tracker] GPS update failed", e);
       }
     })();
 
     return () => {
       mounted = false;
       locationSubscriptionRef.current?.remove();
-      locationSubscriptionRef.current = null;
     };
-  }, []);
+  }, [isPaused]);
 
-  // Função auxiliar de distância (Haversine simples)
-  const calcDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371; // Raio da Terra em km
-    const dLat = (lat2 - lat1) * (Math.PI / 180);
-    const dLon = (lon2 - lon1) * (Math.PI / 180);
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos(lat1 * (Math.PI / 180)) *
-      Math.cos(lat2 * (Math.PI / 180)) *
-      Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Retorna em KM
-  };
-
-  const formatTime = (totalSeconds: number) => {
-    const min = Math.floor(totalSeconds / 60);
-    const sec = totalSeconds % 60;
-    return `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  const handlePauseResume = () => {
+    if (isPaused) {
+      if (pausedAtRef.current) {
+        totalPausedTimeRef.current += Date.now() - pausedAtRef.current;
+      }
+      setIsPaused(false);
+    } else {
+      pausedAtRef.current = Date.now();
+      setIsPaused(true);
+    }
   };
 
   const handleFinish = () => {
-    const safeCoordinates = toCoordinateArray(routeCoordinates);
-    // Retorna os dados para a tela pai
+    const durationMs = Date.now() - startedAtRef.current - totalPausedTimeRef.current;
     onFinish({
-      coordinates: safeCoordinates,
+      coordinates: routeCoordinates,
       distance: parseFloat(distance.toFixed(2)),
-      duration: Math.floor(seconds / 60) // em minutos
+      duration: Math.floor(durationMs / 60000),
     });
   };
 
-  const initialRegion = getRegionWithFallback(currentLocation, FALLBACK_REGION, {
-    latitudeDelta: 0.005,
-    longitudeDelta: 0.005,
-  });
+  const pace = useMemo(() => {
+    const durationSec = (Date.now() - startedAtRef.current - totalPausedTimeRef.current) / 1000;
+    return calculatePace(distance, durationSec);
+  }, [distance]);
 
   return (
     <View style={styles.container}>
-      {currentLocation ? (
-        <MapView
-          ref={mapRef}
-          style={styles.map}
-          provider={PROVIDER_DEFAULT}
-          initialRegion={initialRegion}
-          showsUserLocation={true}
-        >
-          <Polyline
-            coordinates={routeCoordinates}
-            strokeColor="#2563eb"
-            strokeWidth={5}
-          />
-          {routeCoordinates.length > 0 && (
-            <Marker coordinate={routeCoordinates[0]} title="Início" pinColor="green" />
-          )}
-        </MapView>
-      ) : (
-        <View style={styles.mapFallback}>
-          <Text style={styles.mapFallbackTitle}>Aguardando localização</Text>
-          <Text style={styles.mapFallbackText}>
-            {mapError || 'Ative o GPS para iniciar o rastreamento com segurança.'}
-          </Text>
-        </View>
-      )}
+      <TrackerMapView
+        currentLocation={currentLocation}
+        routeCoordinates={routeCoordinates}
+        mapRef={mapRef}
+      />
 
-      {/* Overlay de Informações */}
-      <View style={[styles.overlay, { bottom: Math.max(insets.bottom + 12, 24) }]}>
-        <View style={styles.statsContainer}>
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Tempo</Text>
-            <Text style={styles.statValue}>{formatTime(seconds)}</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={styles.statLabel}>Distância</Text>
-            <Text style={styles.statValue}>{distance.toFixed(2)} km</Text>
-          </View>
-        </View>
+      <Animated.View style={[StyleSheet.absoluteFill, styles.darkOverlay, animatedOverlayStyle]} pointerEvents="none" />
 
-        <View style={styles.buttonsContainer}>
-            <TouchableOpacity style={styles.cancelButton} onPress={onCancel}>
-                <Text style={styles.buttonText}>Cancelar</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.finishButton} onPress={handleFinish}>
-                <Text style={styles.buttonText}>Finalizar Trilha</Text>
-            </TouchableOpacity>
-        </View>
-      </View>
+      <PanGestureHandler onGestureEvent={gestureHandler}>
+        <Animated.View style={[styles.panel, animatedPanelStyle, { paddingBottom: insets.bottom + 20 }]}>
+          <View style={styles.dragHandle} />
+          
+          <View style={styles.hudHeader}>
+            <View style={styles.mainMetric}>
+              <Text style={styles.metricLabel}>TEMPO</Text>
+              <TimerDisplay startedAt={startedAtRef.current} />
+            </View>
+          </View>
+
+          <View style={styles.secondaryMetrics}>
+            <View style={styles.metricBox}>
+              <Text style={styles.metricLabel}>DISTÂNCIA (KM)</Text>
+              <Text style={styles.metricValue}>{distance.toFixed(2)}</Text>
+            </View>
+            <View style={styles.metricBox}>
+              <Text style={styles.metricLabel}>RITMO (PACE)</Text>
+              <Text style={styles.metricValue}>{formatPace(pace).split(" ")[0]}</Text>
+            </View>
+          </View>
+
+          <View style={styles.controls}>
+            <Pressable style={[styles.controlBtn, styles.cancelBtn]} onPress={onCancel}>
+              <Ionicons name="close" size={24} color="#fff" />
+            </Pressable>
+
+            <Pressable 
+              style={[styles.controlBtn, isPaused ? styles.resumeBtn : styles.pauseBtn]} 
+              onPress={handlePauseResume}
+            >
+              <Ionicons name={isPaused ? "play" : "pause"} size={32} color="#fff" />
+            </Pressable>
+
+            <Pressable style={[styles.controlBtn, styles.finishBtn]} onPress={handleFinish}>
+              <Ionicons name="stop" size={24} color="#fff" />
+            </Pressable>
+          </View>
+        </Animated.View>
+      </PanGestureHandler>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#000',
-  },
-  map: {
-    width: Dimensions.get('window').width,
-    height: Dimensions.get('window').height,
-  },
-  overlay: {
-    position: 'absolute',
-    left: 20,
-    right: 20,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    borderRadius: 20,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
-  },
-  mapFallback: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
+  container: { flex: 1, backgroundColor: "#000" },
+  mapFallback: { flex: 1, backgroundColor: "#020617", alignItems: "center", justifyContent: "center" },
+  mapFallbackText: { color: "#94a3b8", marginTop: 12, fontWeight: "600" },
+  darkOverlay: { backgroundColor: "#000" },
+  panel: {
+    position: "absolute",
+    bottom: -MAX_PANEL_HEIGHT + MIN_PANEL_HEIGHT,
+    left: 0,
+    right: 0,
+    height: MAX_PANEL_HEIGHT,
+    backgroundColor: "#111827",
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
     paddingHorizontal: 24,
+    paddingTop: 12,
+    elevation: 20,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
   },
-  mapFallbackTitle: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  mapFallbackText: {
-    marginTop: 8,
-    color: '#cbd5e1',
-    textAlign: 'center',
-    fontSize: 14,
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
+  dragHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: "#374151",
+    borderRadius: 2,
+    alignSelf: "center",
     marginBottom: 20,
   },
-  statItem: {
-    alignItems: 'center',
+  hudHeader: {
+    alignItems: "center",
+    marginBottom: 30,
   },
-  statLabel: {
-    color: '#ccc',
-    fontSize: 14,
+  mainMetric: {
+    alignItems: "center",
   },
-  statValue: {
-    color: '#fff',
-    fontSize: 24,
-    fontWeight: 'bold',
+  metricLabel: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "800",
+    letterSpacing: 1.5,
+    marginBottom: 4,
   },
-  buttonsContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 10
+  timerText: {
+    color: "#fff",
+    fontSize: 72,
+    fontWeight: "900",
+    fontVariant: ["tabular-nums"],
   },
-  cancelButton: {
+  secondaryMetrics: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 40,
+  },
+  metricBox: {
     flex: 1,
-    backgroundColor: '#ef4444',
-    padding: 15,
-    borderRadius: 12,
-    alignItems: 'center',
+    alignItems: "center",
   },
-  finishButton: {
-    flex: 1,
-    backgroundColor: '#22c55e',
-    padding: 15,
-    borderRadius: 12,
-    alignItems: 'center',
+  metricValue: {
+    color: "#fff",
+    fontSize: 42,
+    fontWeight: "800",
+    fontVariant: ["tabular-nums"],
   },
-  buttonText: {
-    color: '#fff',
-    fontWeight: 'bold',
-    fontSize: 16,
+  controls: {
+    flexDirection: "row",
+    justifyContent: "space-around",
+    alignItems: "center",
+  },
+  controlBtn: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 4,
+  },
+  pauseBtn: { backgroundColor: "#f97316", width: 80, height: 80, borderRadius: 40 },
+  resumeBtn: { backgroundColor: "#22c55e", width: 80, height: 80, borderRadius: 40 },
+  cancelBtn: { backgroundColor: "#475569" },
+  finishBtn: { backgroundColor: "#ef4444" },
+  startDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#22c55e",
+    borderWidth: 2,
+    borderColor: "#fff",
   },
 });
