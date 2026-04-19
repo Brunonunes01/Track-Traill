@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from "react";
-import { LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from "react-native";
+import { PanResponder, StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Defs, LinearGradient as SvgLinearGradient, Stop, Line, Path } from "react-native-svg";
 import { ChartPoint } from "../../utils/activityCharts";
 

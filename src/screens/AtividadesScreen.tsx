@@ -3,7 +3,7 @@ import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import * as Location from "expo-location";
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Alert, PanResponder, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import MapView, { Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import Animated, { FadeInDown, FadeOutDown, Layout, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -25,7 +25,7 @@ import {
   resumeActivityTracking,
   startActivityTracking,
 } from "../services/activityTrackingService";
-import { formatPace, getPerformancePrimary } from "../utils/activityMetrics";
+import { calculateDistance3DMeters, formatPace, getPerformancePrimary } from "../utils/activityMetrics";
 import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
 
 type Coordinate = { latitude: number; longitude: number };
@@ -36,6 +36,7 @@ const ACTIVITY_OPTIONS: { label: string; value: ActivityType }[] = [
   { label: "Caminhada", value: "caminhada" },
   { label: "Trilha", value: "trilha" },
 ];
+const ROUTE_START_MAX_DISTANCE_METERS = 100;
 
 const inferActivityType = (value?: string): ActivityType => {
   const normalized = (value || "").toLowerCase();
@@ -96,6 +97,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const [statusMessage, setStatusMessage] = useState("Pronto para iniciar.");
   const [sensorSamples, setSensorSamples] = useState<{ timestamp: number; value: number }[]>([]);
   const [focusMode, setFocusMode] = useState(false);
+  const [distanceFromRouteStartMeters, setDistanceFromRouteStartMeters] = useState<number | null>(null);
 
   const trackedPath: Coordinate[] = useMemo(() => toCoordinateArray(session?.points || []), [session]);
   const durationSeconds = useMemo(() => getSessionDurationSeconds(session), [session]);
@@ -112,6 +114,10 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
   const isPaused = session?.status === "paused_auto" || session?.status === "paused_manual";
   const hasActiveSession = !!session && session.status !== "finished";
   const safeSuggestedPath = useMemo(() => toCoordinateArray(rotaGuia?.rotaCompleta), [rotaGuia?.rotaCompleta]);
+  const routeStartPoint = useMemo(
+    () => toCoordinate(rotaGuia?.startPoint) || toCoordinate(rotaGuia?.rotaCompleta?.[0]),
+    [rotaGuia?.rotaCompleta, rotaGuia?.startPoint]
+  );
   const mapInitialRegion = useMemo(
     () => getRegionWithFallback(toCoordinate(rotaGuia?.startPoint) || trackedPath[0] || null, FALLBACK_REGION, { latitudeDelta: 0.05, longitudeDelta: 0.05 }),
     [rotaGuia?.startPoint, trackedPath]
@@ -148,6 +154,54 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
     }
   };
 
+  const ensureLocationReady = useCallback(async (showAlerts: boolean): Promise<boolean> => {
+    try {
+      let servicesEnabled = await Location.hasServicesEnabledAsync();
+      if (!servicesEnabled && Platform.OS === "android") {
+        try {
+          await Location.enableNetworkProviderAsync();
+          servicesEnabled = await Location.hasServicesEnabledAsync();
+        } catch (error: any) {
+          console.warn("[activity] enableNetworkProviderAsync failed:", error?.message || String(error));
+        }
+      }
+
+      if (!servicesEnabled) {
+        if (showAlerts) {
+          Alert.alert("GPS desativado", "Ative a localização do dispositivo para gravar atividade.", [
+            { text: "Cancelar", style: "cancel" },
+            { text: "Abrir ajustes", onPress: () => Linking.openSettings().catch(() => {}) },
+          ]);
+        }
+        return false;
+      }
+
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted") {
+        permission = await Location.requestForegroundPermissionsAsync();
+      }
+
+      if (permission.status !== "granted") {
+        if (showAlerts) {
+          Alert.alert("Permissão necessária", "Permita localização para iniciar e gravar atividade.", [
+            { text: "Cancelar", style: "cancel" },
+            ...(permission.canAskAgain === false
+              ? [{ text: "Abrir ajustes", onPress: () => Linking.openSettings().catch(() => {}) }]
+              : []),
+          ]);
+        }
+        return false;
+      }
+
+      return true;
+    } catch (error: any) {
+      if (showAlerts) {
+        Alert.alert("Erro", error?.message || "Não foi possível validar o GPS.");
+      }
+      return false;
+    }
+  }, []);
+
   const startForegroundWatch = useCallback(async () => {
     stopForegroundWatch();
     try {
@@ -176,6 +230,41 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
     }
   }, []);
 
+  const refreshDistanceFromRouteStart = useCallback(
+    async (coords?: Location.LocationObjectCoords) => {
+      if (!routeStartPoint || hasActiveSession) {
+        setDistanceFromRouteStartMeters(null);
+        return;
+      }
+
+      try {
+        const currentCoords =
+          coords ||
+          (
+            await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Balanced,
+            })
+          ).coords;
+
+        const meters = calculateDistance3DMeters(
+          currentCoords.latitude,
+          currentCoords.longitude,
+          typeof currentCoords.altitude === "number" ? currentCoords.altitude : null,
+          routeStartPoint.latitude,
+          routeStartPoint.longitude,
+          typeof (rotaGuia as any)?.startPoint?.altitude === "number"
+            ? (rotaGuia as any).startPoint.altitude
+            : null
+        );
+
+        setDistanceFromRouteStartMeters(Number.isFinite(meters) ? meters : null);
+      } catch {
+        setDistanceFromRouteStartMeters(null);
+      }
+    },
+    [hasActiveSession, routeStartPoint, rotaGuia]
+  );
+
   useEffect(() => {
     let mounted = true;
     const bootstrap = async () => {
@@ -187,8 +276,8 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
       }, 10000);
 
       try {
-        const foregroundPermission = await Location.requestForegroundPermissionsAsync();
-        if (foregroundPermission.status !== "granted") {
+        const ready = await ensureLocationReady(true);
+        if (!ready) {
           setStatusMessage("Permissão de localização necessária para gravar atividade.");
           setLoadingSession(false);
           clearTimeout(bootstrapTimeout);
@@ -201,6 +290,7 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
         if (startFocus) {
           mapRef.current?.animateCamera({ center: startFocus, zoom: 16 });
         }
+        await refreshDistanceFromRouteStart(current.coords);
 
         const active = await getActiveSession();
         if (!mounted) return;
@@ -241,7 +331,28 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
       if (syncInterval.current) clearInterval(syncInterval.current);
       stopForegroundWatch();
     };
-  }, [loadingSession, rotaGuia?.startPoint, startForegroundWatch]);
+  }, [ensureLocationReady, loadingSession, refreshDistanceFromRouteStart, rotaGuia?.startPoint, startForegroundWatch]);
+
+  useEffect(() => {
+    if (!routeStartPoint || hasActiveSession) {
+      setDistanceFromRouteStartMeters(null);
+      return;
+    }
+
+    let mounted = true;
+    const updateDistance = async () => {
+      if (!mounted) return;
+      await refreshDistanceFromRouteStart();
+    };
+
+    updateDistance();
+    const intervalId = setInterval(updateDistance, 8000);
+
+    return () => {
+      mounted = false;
+      clearInterval(intervalId);
+    };
+  }, [hasActiveSession, refreshDistanceFromRouteStart, routeStartPoint]);
 
   useEffect(() => {
     if (!isRecording) return;
@@ -258,10 +369,33 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
     if (!user) return Alert.alert("Erro", "Você precisa estar logado.");
 
     try {
-      const current = await Location.getCurrentPositionAsync({});
+      const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest });
       const safeCurrent = toCoordinate(current.coords);
       if (!safeCurrent && trackedPath.length === 0) throw new Error("Coordenadas iniciais inválidas.");
       const startPoint = trackedPath[trackedPath.length - 1] || (safeCurrent as Coordinate);
+
+      const routeStartPoint = toCoordinate(rotaGuia?.startPoint) || toCoordinate(rotaGuia?.rotaCompleta?.[0]);
+      if (routeStartPoint) {
+        const distanceFromRouteStartMeters = calculateDistance3DMeters(
+          startPoint.latitude,
+          startPoint.longitude,
+          typeof current.coords.altitude === "number" ? current.coords.altitude : null,
+          routeStartPoint.latitude,
+          routeStartPoint.longitude,
+          typeof (rotaGuia as any)?.startPoint?.altitude === "number"
+            ? (rotaGuia as any).startPoint.altitude
+            : null
+        );
+
+        if (distanceFromRouteStartMeters > ROUTE_START_MAX_DISTANCE_METERS) {
+          setDistanceFromRouteStartMeters(distanceFromRouteStartMeters);
+          Alert.alert(
+            "Fora da zona de início",
+            `Você está a ${Math.round(distanceFromRouteStartMeters)}m do ponto inicial. Limite máximo: ${ROUTE_START_MAX_DISTANCE_METERS}m.`
+          );
+          return;
+        }
+      }
 
       const response = await startActivityTracking({
         userId: user.uid,
@@ -281,8 +415,9 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
         stopForegroundWatch();
         setStatusMessage("Atividade iniciada em background.");
       }
-    } catch (error: any) {
-      Alert.alert("Não foi possível iniciar", error?.message || "Verifique permissões de localização.");
+      setDistanceFromRouteStartMeters(null);
+    } catch {
+      Alert.alert("Erro de localização", "Não foi possível obter sua localização atual. Tente novamente.");
     }
   };
 
@@ -357,26 +492,27 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
   const handleCenterOnCurrentLocation = async () => {
     try {
-      const permission = await Location.getForegroundPermissionsAsync();
-      if (permission.status !== "granted") {
-        const requested = await Location.requestForegroundPermissionsAsync();
-        if (requested.status !== "granted") return Alert.alert("Permissão necessária", "Permita localização para centralizar o mapa.");
-      }
+      const ready = await ensureLocationReady(true);
+      if (!ready) return;
       const current = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
       const safeCurrent = toCoordinate(current.coords);
       if (!safeCurrent) return Alert.alert("Localização indisponível", "Coordenadas inválidas retornadas pelo GPS.");
       mapRef.current?.animateCamera({ center: safeCurrent, zoom: 17 }, { duration: 450 });
+      await refreshDistanceFromRouteStart(current.coords);
     } catch {
       Alert.alert("Localização indisponível", "Não foi possível centralizar no local atual.");
     }
   };
 
-  let tabBarHeight = 0;
-  try {
-    tabBarHeight = useBottomTabBarHeight();
-  } catch (e) {
-    // Tab bar not present
-  }
+  const startBlockedByDistance =
+    !hasActiveSession &&
+    Boolean(routeStartPoint) &&
+    typeof distanceFromRouteStartMeters === "number" &&
+    distanceFromRouteStartMeters > ROUTE_START_MAX_DISTANCE_METERS;
+  const startButtonLabel = startBlockedByDistance ? "Aproxime-se para iniciar" : "Iniciar atividade";
+  const startButtonIcon = startBlockedByDistance ? "lock-closed-outline" : "play";
+
+  const tabBarHeight = useBottomTabBarHeight();
 
   if (loadingSession) {
     return (
@@ -482,9 +618,20 @@ export default function AtividadesScreen(props: AtividadesScreenProps) {
 
         <View style={[styles.actionsDock, { paddingBottom: Math.max(insets.bottom + tabBarHeight + 20, 36) }]}>
           {!hasActiveSession ? (
-            <Pressable style={({ pressed }) => [styles.mainActionButton, styles.startAction, pressed ? styles.buttonPressed : null]} onPress={handleStart}>
-              <Ionicons name="play" size={22} color="#fff" />
-              <Text style={styles.mainActionText}>Iniciar atividade</Text>
+            <Pressable
+              disabled={startBlockedByDistance}
+              style={({ pressed }) => [
+                styles.mainActionButton,
+                styles.startAction,
+                startBlockedByDistance ? styles.startActionDisabled : null,
+                pressed && !startBlockedByDistance ? styles.buttonPressed : null,
+              ]}
+              onPress={handleStart}
+            >
+              <Ionicons name={startButtonIcon as any} size={22} color={startBlockedByDistance ? "#e5e7eb" : "#fff"} />
+              <Text style={[styles.mainActionText, startBlockedByDistance ? styles.mainActionTextDisabled : null]}>
+                {startButtonLabel}
+              </Text>
             </Pressable>
           ) : null}
 
@@ -621,10 +768,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
   },
   startAction: { backgroundColor: "#16a34a" },
+  startActionDisabled: {
+    backgroundColor: "#334155",
+    borderWidth: 1,
+    borderColor: "#475569",
+  },
   pauseAction: { backgroundColor: "#ea580c" },
   resumeAction: { backgroundColor: "#16a34a" },
   finishAction: { backgroundColor: "#dc2626" },
   mainActionText: { color: "#fff", fontSize: 17, fontWeight: "800" },
+  mainActionTextDisabled: { color: "#e5e7eb" },
   pausedActionsRow: { flexDirection: "row", gap: 10 },
   splitActionBtn: {
     flex: 1,

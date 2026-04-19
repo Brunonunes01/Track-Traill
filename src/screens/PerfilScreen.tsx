@@ -1,27 +1,27 @@
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons } from "@expo/vector-icons";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
-import { useNavigation } from '@react-navigation/native';
-import { LinearGradient } from 'expo-linear-gradient';
+import { useNavigation } from "@react-navigation/native";
+import { LinearGradient } from "expo-linear-gradient";
 import * as Clipboard from "expo-clipboard";
-import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { onValue, ref } from 'firebase/database';
-import React, { useEffect, useState } from 'react';
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onValue, ref } from "firebase/database";
+import React, { useEffect, useMemo, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
-  ImageBackground,
   Share,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View
-} from 'react-native';
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { auth, database } from '../../services/connectionFirebase';
-import { ensureUserRole, resolveUserRole } from '../../services/adminService';
+import { auth, database } from "../../services/connectionFirebase";
+import { resolveUserRole } from "../../services/adminService";
 import { ensureUserProfileCompatibility, updatePublicProfile } from "../services/userService";
+import { AppButton, AppCard, LoadingState } from "../components/ui";
+import { colors, layout, radius, shadows, spacing, typography } from "../theme/designSystem";
 
 type PerfilScreenProps = {
   navigation?: any;
@@ -98,15 +98,13 @@ export default function PerfilScreen(props: PerfilScreenProps) {
   const tabBarHeight = useBottomTabBarHeight();
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
-  
-  // Dados do Usuário
-  const [fullName, setFullName] = useState('');
-  const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
-  const [uidLogado, setUidLogado] = useState('');
-  const [role, setRole] = useState<'user' | 'admin'>('user');
 
-  // Estatísticas
+  const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
+  const [uidLogado, setUidLogado] = useState("");
+  const [role, setRole] = useState<"user" | "admin">("user");
+
   const [totalKm, setTotalKm] = useState(0);
   const [totalDurationSeconds, setTotalDurationSeconds] = useState(0);
 
@@ -124,10 +122,7 @@ export default function PerfilScreen(props: PerfilScreenProps) {
 
       if (user) {
         setUidLogado(user.uid);
-        setEmail(user.email || '');
-        ensureUserRole(user.uid, user.email || '').catch((error: any) => {
-          console.warn("[admin] ensureUserRole failed:", error?.message || String(error));
-        });
+        setEmail(user.email || "");
         ensureUserProfileCompatibility({ uid: user.uid, email: user.email || "" }).catch((error: any) => {
           console.error("[username-flow] ensure-profile:failure", {
             screen: "PerfilScreen",
@@ -138,45 +133,48 @@ export default function PerfilScreen(props: PerfilScreenProps) {
         });
 
         const userRef = ref(database, `users/${user.uid}`);
-        
-        unsubscribeDB = onValue(userRef, (snapshot) => {
-          if (snapshot.exists()) {
-            const data = snapshot.val();
-            
-            setFullName(data.fullName || 'Usuário Sem Nome');
-            setUsername(data.username || `user_${user.uid.substring(0, 6)}`);
-            setRole(resolveUserRole(data, user.email || '') as 'user' | 'admin');
 
-            if (data.atividades) {
-              let km = 0;
-              let totalSeconds = 0;
-              Object.values(data.atividades).forEach((ativ: any) => {
-                km += Number(ativ.distancia || 0);
-                totalSeconds += parseDurationSeconds(ativ);
-              });
-              setTotalKm(km);
-              setTotalDurationSeconds(totalSeconds);
+        unsubscribeDB = onValue(
+          userRef,
+          (snapshot) => {
+            if (snapshot.exists()) {
+              const data = snapshot.val();
+
+              setFullName(data.fullName || "Usuário Sem Nome");
+              setUsername(data.username || `user_${user.uid.substring(0, 6)}`);
+              setRole(resolveUserRole(data, user.email || "") as "user" | "admin");
+
+              if (data.atividades) {
+                let km = 0;
+                let totalSeconds = 0;
+                Object.values(data.atividades).forEach((ativ: any) => {
+                  km += Number(ativ.distancia || 0);
+                  totalSeconds += parseDurationSeconds(ativ);
+                });
+                setTotalKm(km);
+                setTotalDurationSeconds(totalSeconds);
+              } else {
+                setTotalKm(0);
+                setTotalDurationSeconds(0);
+              }
             } else {
+              setFullName("Novo Explorador");
+              setUsername(`user_${user.uid.substring(0, 5)}`);
+              setRole("user");
               setTotalKm(0);
               setTotalDurationSeconds(0);
             }
-          } else {
-            setFullName('Novo Explorador');
-            setUsername('user_' + user.uid.substring(0, 5));
-            setRole('user');
-            setTotalKm(0);
-            setTotalDurationSeconds(0);
+            setLoading(false);
+          },
+          (error) => {
+            Alert.alert("Erro de Leitura", `O Firebase bloqueou o acesso: ${error.message}`);
+            setLoading(false);
           }
-          setLoading(false);
-        }, (error) => {
-          Alert.alert('Erro de Leitura', 'O Firebase bloqueou o acesso: ' + error.message);
-          setLoading(false);
-        });
-
+        );
       } else {
         setLoading(false);
         if (typeof navigation.reset === "function") {
-          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+          navigation.reset({ index: 0, routes: [{ name: "Login" }] });
         } else if (typeof navigation.replace === "function") {
           navigation.replace("Login");
         }
@@ -184,30 +182,24 @@ export default function PerfilScreen(props: PerfilScreenProps) {
     });
 
     return () => {
-      if (unsubscribeDB) {
-        unsubscribeDB();
-      }
+      if (unsubscribeDB) unsubscribeDB();
       unsubscribeAuth();
     };
   }, [navigation]);
 
   const handleSaveProfile = async () => {
     if (!fullName || !username) {
-      Alert.alert('Atenção', 'Nome e Username não podem ficar vazios.');
+      Alert.alert("Atenção", "Nome e Username não podem ficar vazios.");
       return;
     }
     if (!uidLogado) return;
 
     try {
-      await updatePublicProfile({
-        uid: uidLogado,
-        fullName,
-        username,
-      });
+      await updatePublicProfile({ uid: uidLogado, fullName, username });
       setIsEditing(false);
-      Alert.alert('Sucesso', 'O seu perfil foi atualizado!');
+      Alert.alert("Sucesso", "O seu perfil foi atualizado!");
     } catch (error: any) {
-      Alert.alert('Erro', 'Falha ao atualizar perfil: ' + error.message);
+      Alert.alert("Erro", `Falha ao atualizar perfil: ${error.message}`);
     }
   };
 
@@ -225,219 +217,343 @@ export default function PerfilScreen(props: PerfilScreenProps) {
 
   const handleShareProfile = async () => {
     try {
-      await Share.share({
-        message: `Meu perfil no Track & Trail:\n${profileDeepLink}\n${profileWebLink}`,
-      });
+      await Share.share({ message: `Meu perfil no Track & Trail:\n${profileDeepLink}\n${profileWebLink}` });
     } catch {
       Alert.alert("Erro", "Não foi possível compartilhar o perfil agora.");
     }
   };
 
   const handleLogout = () => {
-    Alert.alert('Sair da Conta', 'Tem certeza que deseja sair?', [
-      { text: 'Cancelar', style: 'cancel' },
-      { 
-        text: 'Sair', 
-        style: 'destructive', 
+    Alert.alert("Sair da Conta", "Tem certeza que deseja sair?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Sair",
+        style: "destructive",
         onPress: async () => {
           try {
             await signOut(auth);
           } catch {
-            Alert.alert('Erro', 'Não foi possível fazer logout.');
+            Alert.alert("Erro", "Não foi possível fazer logout.");
           }
-        } 
+        },
       },
     ]);
   };
 
+  const initials = useMemo(() => {
+    const parts = fullName.trim().split(" ").filter(Boolean);
+    if (parts.length === 0) return "U";
+    if (parts.length === 1) return parts[0][0]?.toUpperCase() || "U";
+    return `${parts[0][0] || ""}${parts[1][0] || ""}`.toUpperCase();
+  }, [fullName]);
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#2563eb" />
-        <Text style={{ color: '#aaa', marginTop: 15 }}>A sincronizar perfil...</Text>
+        <LoadingState label="Sincronizando perfil..." />
       </View>
     );
   }
 
   return (
-    <ImageBackground source={require('../../assets/images/Azulao.png')} style={styles.background}>
-      <LinearGradient colors={['rgba(0,0,0,0.7)', 'rgba(0,0,0,0.9)']} style={styles.overlay}>
-        
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={28} color="#fff" />
+    <View style={styles.screen}>
+      <LinearGradient
+        colors={["#08101D", "#0B1220", "#121F36"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+
+      <ScrollView
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingTop: insets.top + spacing.sm,
+            paddingBottom: Math.max(tabBarHeight + insets.bottom + spacing.lg, spacing.xxl),
+          },
+        ]}
+      >
+        <View style={styles.topBar}>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.goBack()}>
+            <Ionicons name="arrow-back" size={20} color={colors.textPrimary} />
           </TouchableOpacity>
-          <Text style={styles.title}>Meu Perfil</Text>
-          <TouchableOpacity onPress={handleLogout} style={styles.backButton}>
-            <Ionicons name="log-out-outline" size={28} color="#ef4444" />
+          <Text style={styles.screenTitle}>Meu Perfil</Text>
+          <TouchableOpacity style={[styles.iconBtn, styles.logoutBtn]} onPress={handleLogout}>
+            <Ionicons name="log-out-outline" size={20} color={colors.danger} />
           </TouchableOpacity>
         </View>
 
-        <ScrollView
-          contentContainerStyle={[
-            styles.scrollContent,
-            { paddingBottom: Math.max(tabBarHeight + insets.bottom + 20, 40) },
-          ]}
-        >
-          
-          <View style={styles.avatarContainer}>
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarText}>{fullName ? fullName.charAt(0).toUpperCase() : 'U'}</Text>
-            </View>
-            <Text style={styles.usernameText}>@{username}</Text>
-            <View style={[styles.roleBadge, role === 'admin' ? styles.roleBadgeAdmin : styles.roleBadgeUser]}>
-              <Text style={styles.roleText}>{role.toUpperCase()}</Text>
-            </View>
-            <View style={styles.shareRow}>
-              <TouchableOpacity style={styles.shareButton} onPress={handleCopyProfileLink}>
-                <Ionicons name="copy-outline" size={16} color="#d1d5db" />
-                <Text style={styles.shareButtonText}>Copiar link</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.shareButton} onPress={handleShareProfile}>
-                <Ionicons name="share-social-outline" size={16} color="#d1d5db" />
-                <Text style={styles.shareButtonText}>Compartilhar</Text>
-              </TouchableOpacity>
-            </View>
+        <AppCard style={styles.profileCard}>
+          <View style={styles.avatarCircle}>
+            <Text style={styles.avatarText}>{initials}</Text>
+          </View>
+          <Text style={styles.fullName}>{fullName}</Text>
+          <Text style={styles.usernameText}>@{username}</Text>
+          <View style={[styles.roleBadge, role === "admin" ? styles.roleBadgeAdmin : styles.roleBadgeUser]}>
+            <Text style={styles.roleText}>{role.toUpperCase()}</Text>
           </View>
 
-          <View style={styles.statsContainer}>
-            <View style={styles.statBox}>
-              <Ionicons name="resize" size={24} color="#2563eb" />
-              <Text style={styles.statValue}>{totalKm.toFixed(1)} km</Text>
-              <Text style={styles.statLabel}>Percorridos</Text>
-            </View>
-            <View style={styles.divider} />
-            <View style={styles.statBox}>
-              <Ionicons name="time" size={24} color="#22c55e" />
-              <Text style={styles.statValue}>{formatDurationLabel(totalDurationSeconds)}</Text>
-              <Text style={styles.statLabel}>de Atividade</Text>
-            </View>
+          <View style={styles.shareRow}>
+            <AppButton
+              title="Copiar link"
+              variant="ghost"
+              icon={<Ionicons name="copy-outline" size={16} color={colors.textPrimary} />}
+              onPress={handleCopyProfileLink}
+              style={styles.shareBtn}
+            />
+            <AppButton
+              title="Compartilhar"
+              variant="ghost"
+              icon={<Ionicons name="share-social-outline" size={16} color={colors.textPrimary} />}
+              onPress={handleShareProfile}
+              style={styles.shareBtn}
+            />
+          </View>
+        </AppCard>
+
+        <View style={styles.statsRow}>
+          <AppCard style={styles.statCard}>
+            <Ionicons name="trail-sign-outline" size={20} color={colors.info} />
+            <Text style={styles.statValue}>{totalKm.toFixed(1)} km</Text>
+            <Text style={styles.statLabel}>Percorridos</Text>
+          </AppCard>
+          <AppCard style={styles.statCard}>
+            <Ionicons name="time-outline" size={20} color={colors.success} />
+            <Text style={styles.statValue}>{formatDurationLabel(totalDurationSeconds)}</Text>
+            <Text style={styles.statLabel}>Tempo total</Text>
+          </AppCard>
+        </View>
+
+        <AppButton
+          title="Ver histórico completo"
+          variant="secondary"
+          icon={<Ionicons name="calendar-outline" size={16} color={colors.textPrimary} />}
+          onPress={() => navigation.navigate("History")}
+          style={styles.historyAction}
+        />
+
+        <AppCard style={styles.formCard}>
+          <View style={styles.formHeader}>
+            <Text style={styles.formTitle}>Informações pessoais</Text>
+            <TouchableOpacity onPress={() => setIsEditing((current) => !current)}>
+              <Ionicons
+                name={isEditing ? "close-circle-outline" : "create-outline"}
+                size={20}
+                color={isEditing ? colors.warning : colors.info}
+              />
+            </TouchableOpacity>
           </View>
 
-          <TouchableOpacity
-            style={styles.historyButton}
-            onPress={() => navigation.navigate("History")}
-          >
-            <Ionicons name="time-outline" size={20} color="#fff" style={{ marginRight: 8 }} />
-            <Text style={styles.historyButtonText}>VER HISTÓRICO COMPLETO</Text>
-          </TouchableOpacity>
+          <Text style={styles.fieldLabel}>Nome completo</Text>
+          <TextInput
+            style={[styles.input, isEditing ? styles.inputEditable : null]}
+            value={fullName}
+            onChangeText={setFullName}
+            editable={isEditing}
+            placeholderTextColor={colors.textMuted}
+          />
 
-          <View style={styles.formContainer}>
-            <View style={styles.formHeader}>
-              <Text style={styles.formTitle}>Informações Pessoais</Text>
-              <TouchableOpacity onPress={() => setIsEditing(!isEditing)}>
-                <Ionicons name={isEditing ? "close-circle" : "pencil"} size={24} color="#aaa" />
-              </TouchableOpacity>
-            </View>
+          <Text style={styles.fieldLabel}>Nome de usuário</Text>
+          <TextInput
+            style={[styles.input, isEditing ? styles.inputEditable : null]}
+            value={username}
+            onChangeText={setUsername}
+            editable={isEditing}
+            autoCapitalize="none"
+            placeholderTextColor={colors.textMuted}
+          />
 
-            <Text style={styles.label}>Nome Completo</Text>
-            <TextInput
-              style={[styles.input, isEditing ? styles.inputEditable : null]}
-              value={fullName}
-              onChangeText={setFullName}
-              editable={isEditing}
-              placeholderTextColor="#888"
+          <Text style={styles.fieldLabel}>E-mail (privado)</Text>
+          <TextInput style={[styles.input, styles.inputReadonly]} value={email} editable={false} />
+
+          {isEditing ? (
+            <AppButton
+              title="Salvar alterações"
+              onPress={handleSaveProfile}
+              icon={<Ionicons name="save-outline" size={16} color={colors.white} />}
+              style={styles.saveAction}
             />
+          ) : null}
 
-            <Text style={styles.label}>Nome de Usuário</Text>
-            <TextInput
-              style={[styles.input, isEditing ? styles.inputEditable : null]}
-              value={username}
-              onChangeText={setUsername}
-              editable={isEditing}
-              placeholderTextColor="#888"
-              autoCapitalize="none"
+          {role === "admin" ? (
+            <AppButton
+              title="Painel de administração"
+              variant="danger"
+              icon={<Ionicons name="shield-checkmark-outline" size={16} color={colors.textPrimary} />}
+              onPress={() => navigation.navigate("AdminDashboard")}
+              style={styles.adminAction}
             />
-
-            <Text style={styles.label}>E-mail (privado)</Text>
-            <TextInput
-              style={[styles.input, { color: '#666' }]}
-              value={email}
-              editable={false}
-            />
-
-            {isEditing && (
-              <TouchableOpacity style={styles.saveButton} onPress={handleSaveProfile}>
-                <Text style={styles.saveButtonText}>SALVAR ALTERAÇÕES</Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Botão exclusivo para contas com role admin. */}
-            {role === 'admin' && (
-              <TouchableOpacity 
-                style={{ backgroundColor: '#ef4444', borderRadius: 25, paddingVertical: 15, alignItems: 'center', marginTop: 20, flexDirection: 'row', justifyContent: 'center' }} 
-                onPress={() => navigation.navigate("AdminDashboard")}
-              >
-                <Ionicons name="shield-checkmark" size={20} color="#fff" style={{ marginRight: 8 }} />
-                <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>PAINEL DE ADMINISTRAÇÃO</Text>
-              </TouchableOpacity>
-            )}
-
-          </View>
-
-        </ScrollView>
-      </LinearGradient>
-    </ImageBackground>
+          ) : null}
+        </AppCard>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#121212' },
-  background: { flex: 1, resizeMode: 'cover' },
-  overlay: { flex: 1 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 50, paddingHorizontal: 20, paddingBottom: 20 },
-  backButton: { padding: 5 },
-  title: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
-  scrollContent: { paddingHorizontal: 20, paddingBottom: 40 },
-  avatarContainer: { alignItems: 'center', marginBottom: 30 },
-  avatarCircle: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#2563eb', justifyContent: 'center', alignItems: 'center', borderWidth: 3, borderColor: '#fff', elevation: 5 },
-  avatarText: { color: '#fff', fontSize: 40, fontWeight: 'bold' },
-  usernameText: { color: '#aaa', fontSize: 16, marginTop: 10, fontWeight: '600' },
-  roleBadge: { marginTop: 10, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 5 },
-  roleBadgeAdmin: { backgroundColor: 'rgba(239, 68, 68, 0.25)', borderWidth: 1, borderColor: '#ef4444' },
-  roleBadgeUser: { backgroundColor: 'rgba(37, 99, 235, 0.25)', borderWidth: 1, borderColor: '#2563eb' },
-  roleText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  shareRow: { flexDirection: "row", gap: 10, marginTop: 12 },
-  shareButton: {
+  screen: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: colors.background,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  content: {
+    paddingHorizontal: layout.screenPaddingHorizontal,
+    gap: spacing.md,
+  },
+  topBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    borderWidth: 1,
-    borderColor: "#374151",
-    backgroundColor: "rgba(0,0,0,0.35)",
-    borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    justifyContent: "space-between",
+    marginBottom: spacing.xs,
   },
-  shareButtonText: { color: "#d1d5db", fontSize: 12, fontWeight: "700" },
-  statsContainer: { flexDirection: 'row', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, padding: 20, marginBottom: 30, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  historyButton: {
-    backgroundColor: 'rgba(37, 99, 235, 0.85)',
-    borderRadius: 14,
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.round,
     borderWidth: 1,
-    borderColor: '#60a5fa',
-    paddingVertical: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexDirection: 'row',
-    marginBottom: 18,
+    borderColor: colors.border,
+    backgroundColor: "rgba(11, 18, 32, 0.55)",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  historyButtonText: {
-    color: '#fff',
+  logoutBtn: {
+    borderColor: "rgba(239, 68, 68, 0.35)",
+    backgroundColor: "rgba(127, 29, 29, 0.2)",
+  },
+  screenTitle: {
+    ...typography.sectionTitle,
+    fontSize: 22,
+  },
+  profileCard: {
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  avatarCircle: {
+    width: 92,
+    height: 92,
+    borderRadius: radius.round,
+    backgroundColor: colors.primary,
+    borderWidth: 3,
+    borderColor: "rgba(248,250,252,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+    ...shadows.floating,
+  },
+  avatarText: {
+    color: colors.white,
+    fontSize: 34,
+    fontWeight: "800",
+  },
+  fullName: {
+    color: colors.textPrimary,
+    fontSize: 21,
+    fontWeight: "800",
+    marginTop: spacing.xs,
+  },
+  usernameText: {
+    color: colors.textMuted,
     fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 0.4,
+    fontWeight: "600",
   },
-  statBox: { flex: 1, alignItems: 'center' },
-  divider: { width: 1, backgroundColor: 'rgba(255,255,255,0.2)', marginHorizontal: 15 },
-  statValue: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginTop: 8 },
-  statLabel: { color: '#aaa', fontSize: 12, marginTop: 4 },
-  formContainer: { backgroundColor: 'rgba(0,0,0,0.5)', padding: 25, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' },
-  formHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
-  formTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  label: { color: '#bbb', fontSize: 13, marginBottom: 5, marginLeft: 5 },
-  input: { backgroundColor: 'rgba(255,255,255,0.05)', color: '#fff', borderRadius: 12, padding: 15, fontSize: 16, marginBottom: 15, borderWidth: 1, borderColor: 'transparent' },
-  inputEditable: { borderColor: '#2563eb', backgroundColor: 'rgba(37, 99, 235, 0.1)' },
-  saveButton: { backgroundColor: '#2563eb', borderRadius: 25, paddingVertical: 15, alignItems: 'center', marginTop: 10 },
-  saveButtonText: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
+  roleBadge: {
+    marginTop: spacing.xs,
+    borderRadius: radius.round,
+    borderWidth: 1,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xxs + 1,
+  },
+  roleBadgeAdmin: {
+    borderColor: "rgba(239,68,68,0.35)",
+    backgroundColor: "rgba(127, 29, 29, 0.22)",
+  },
+  roleBadgeUser: {
+    borderColor: "rgba(56, 189, 248, 0.35)",
+    backgroundColor: "rgba(12, 74, 110, 0.25)",
+  },
+  roleText: {
+    color: colors.textPrimary,
+    fontSize: 11,
+    fontWeight: "800",
+    letterSpacing: 0.5,
+  },
+  shareRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+  },
+  shareBtn: {
+    flex: 1,
+    minHeight: 44,
+  },
+  statsRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  statCard: {
+    flex: 1,
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  statValue: {
+    color: colors.textPrimary,
+    fontSize: 18,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  statLabel: {
+    color: colors.textMuted,
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  historyAction: {
+    minHeight: 50,
+  },
+  formCard: {
+    gap: spacing.xs,
+  },
+  formHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.xs,
+  },
+  formTitle: {
+    ...typography.cardTitle,
+  },
+  fieldLabel: {
+    ...typography.label,
+    marginTop: spacing.xs,
+    marginBottom: spacing.xxs,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.backgroundAlt,
+    color: colors.textPrimary,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    fontSize: 15,
+  },
+  inputEditable: {
+    borderColor: colors.info,
+    backgroundColor: "rgba(15, 23, 42, 0.92)",
+  },
+  inputReadonly: {
+    color: colors.textMuted,
+    opacity: 0.9,
+  },
+  saveAction: {
+    marginTop: spacing.sm,
+  },
+  adminAction: {
+    marginTop: spacing.sm,
+  },
 });

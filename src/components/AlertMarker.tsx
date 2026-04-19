@@ -18,6 +18,7 @@ export default function AlertMarker({ alert, selected }: AlertMarkerProps) {
         : alert.status === "removido"
           ? "#6b7280"
           : meta?.color || "#6b7280";
+  const markerIcon = (meta?.icon || "alert-circle") as keyof typeof Ionicons.glyphMap;
 
   return (
     <View
@@ -27,11 +28,7 @@ export default function AlertMarker({ alert, selected }: AlertMarkerProps) {
         selected ? styles.markerSelected : null,
       ]}
     >
-      <Ionicons
-        name={(meta?.icon || "alert-circle") as any}
-        size={18}
-        color="#fff"
-      />
+      <Ionicons name={markerIcon as any} size={18} color="#fff" />
       {alert.status === "resolvido" ? (
         <View style={styles.resolvedBadge} />
       ) : null}

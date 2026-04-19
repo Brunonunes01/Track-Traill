@@ -30,9 +30,17 @@ export type TrackTrailRoute = {
   id: string;
   titulo: string;
   tipo: string;
+  userId?: string;
+  userEmail?: string | null;
+  visibility?: "public" | "friends" | "private";
   descricao?: string;
   dificuldade?: string;
   distancia?: string;
+  tempoEstimado?: string | null;
+  duracaoSegundos?: number | null;
+  terreno?: string | null;
+  elevacaoGanhoM?: number | null;
+  elevacaoPerdaM?: number | null;
   city?: string;
   state?: string;
   country?: string;
@@ -73,6 +81,9 @@ export type TrailAlert = {
   resolvedAt?: string | null;
   removedAt?: string | null;
   removedBy?: string | null;
+  moderationStatus?: "none" | "review_pending" | "reviewed";
+  reviewRequestedAt?: string | null;
+  reviewRequestedBy?: string | null;
 };
 
 export const ALERT_TYPE_META: Record<

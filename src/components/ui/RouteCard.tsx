@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import React from "react";
+import React, { ReactNode } from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import { TrackTrailRoute } from "../../models/alerts";
 import { colors, radius, spacing, typography } from "../../theme/designSystem";
@@ -9,14 +9,24 @@ type RouteCardProps = {
   route: TrackTrailRoute;
   activeAlerts?: number;
   onPress?: () => void;
+  footerAction?: ReactNode;
 };
 
-export default function RouteCard({ route, activeAlerts = 0, onPress }: RouteCardProps) {
+export default function RouteCard({ route, activeAlerts = 0, onPress, footerAction }: RouteCardProps) {
   const danger = activeAlerts > 0;
   const safetyScore = Math.max(0, Math.min(100, Math.round(route.safetyScore ?? 0)));
   const safetyColor =
     safetyScore >= 75 ? colors.success : safetyScore >= 50 ? colors.warning : colors.danger;
   const alertsCount = route.activeAlertsNearby ?? activeAlerts;
+  const difficultyLabel = route.dificuldade?.trim() ? route.dificuldade : "Não informada";
+  const distanceLabel = route.distancia?.trim() ? route.distancia : "Distância não informada";
+  const estimatedTimeLabel = route.tempoEstimado?.trim() ? route.tempoEstimado : null;
+  const terrainLabel = route.terreno?.trim() ? route.terreno : null;
+  const hasElevation =
+    typeof route.elevacaoGanhoM === "number" || typeof route.elevacaoPerdaM === "number";
+  const elevationLabel = hasElevation
+    ? `Elevação +${Number(route.elevacaoGanhoM || 0).toFixed(0)} / -${Number(route.elevacaoPerdaM || 0).toFixed(0)} m`
+    : null;
 
   return (
     <TouchableOpacity activeOpacity={0.86} onPress={onPress}>
@@ -54,13 +64,34 @@ export default function RouteCard({ route, activeAlerts = 0, onPress }: RouteCar
         <View style={styles.metaRow}>
           <View style={styles.metaItem}>
             <Ionicons name="resize-outline" size={14} color={colors.info} />
-            <Text style={styles.metaText}>{route.distancia || "N/D"}</Text>
+            <Text style={styles.metaText}>{distanceLabel}</Text>
           </View>
 
           <View style={styles.metaItem}>
             <Ionicons name="speedometer-outline" size={14} color={colors.warning} />
-            <Text style={styles.metaText}>{route.dificuldade || "N/D"}</Text>
+            <Text style={styles.metaText}>Dificuldade: {difficultyLabel}</Text>
           </View>
+
+          {estimatedTimeLabel ? (
+            <View style={styles.metaItem}>
+              <Ionicons name="time-outline" size={14} color={colors.info} />
+              <Text style={styles.metaText}>{estimatedTimeLabel}</Text>
+            </View>
+          ) : null}
+
+          {terrainLabel ? (
+            <View style={styles.metaItem}>
+              <Ionicons name="layers-outline" size={14} color={colors.textMuted} />
+              <Text style={styles.metaText}>{terrainLabel}</Text>
+            </View>
+          ) : null}
+
+          {elevationLabel ? (
+            <View style={styles.metaItem}>
+              <Ionicons name="trending-up-outline" size={14} color={colors.success} />
+              <Text style={styles.metaText}>{elevationLabel}</Text>
+            </View>
+          ) : null}
 
           <View style={styles.metaItem}>
             <Ionicons
@@ -80,6 +111,8 @@ export default function RouteCard({ route, activeAlerts = 0, onPress }: RouteCar
             </Text>
           </View>
         </View>
+
+        {footerAction ? <View style={styles.footerActionRow}>{footerAction}</View> : null}
       </AppCard>
     </TouchableOpacity>
   );
@@ -177,5 +210,9 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     fontSize: 12,
     fontWeight: "700",
+  },
+  footerActionRow: {
+    marginTop: spacing.sm,
+    alignItems: "flex-end",
   },
 });

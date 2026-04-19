@@ -49,6 +49,12 @@ type ActivitySummaryScreenProps = {
   navigation?: any;
   route?: any;
 };
+type ShareVisibility = "public" | "friends" | "private";
+const VISIBILITY_OPTIONS: { value: ShareVisibility; label: string }[] = [
+  { value: "public", label: "App inteiro" },
+  { value: "friends", label: "Somente amigos" },
+  { value: "private", label: "Só para mim" },
+];
 
 export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps) {
   const hookNavigation = useNavigation<any>();
@@ -66,6 +72,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
   const [description, setDescription] = useState("");
   const [caption, setCaption] = useState("");
   const [photoUris, setPhotoUris] = useState<string[]>([]);
+  const [visibility, setVisibility] = useState<ShareVisibility>("friends");
   const [activityType, setActivityType] = useState<ActivityType>(
     sessionFromParams?.activityType || "trilha"
   );
@@ -166,12 +173,14 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
         routeName,
         description,
         activityType,
+        visibility,
       });
 
-      Alert.alert(
-        "Rota salva com sucesso",
-        `Atividade: ${response.activityId}\nRota: ${response.routeId}\nA rota foi enviada para análise.`
-      );
+      const message =
+        response.reviewRequired
+          ? `Atividade: ${response.activityId}\nRota: ${response.routeId}\nA rota foi enviada para análise pública.`
+          : `Atividade: ${response.activityId}\nRota: ${response.routeId}\nRota salva no seu espaço (${visibility === "private" ? "só para você" : "somente amigos"}).`;
+      Alert.alert("Rota salva com sucesso", message);
 
       navigation.navigate("MainTabs", { screen: "Home" });
     } catch (error: any) {
@@ -190,7 +199,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
     try {
       setSharing(true);
 
-      const savedActivity = await saveFinishedSessionAsActivity(session, activityType);
+      const savedActivity = await saveFinishedSessionAsActivity(session, activityType, visibility);
       await createActivitySharePost({
         userId: session.userId,
         session,
@@ -200,10 +209,18 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
         caption,
         activityType,
         photoUris,
+        visibility,
       });
 
       await discardActiveSession();
-      Alert.alert("Compartilhado", "Sua atividade foi compartilhada com seus amigos.");
+      Alert.alert(
+        "Compartilhado",
+        visibility === "public"
+          ? "Sua atividade foi compartilhada para todo o app."
+          : visibility === "friends"
+            ? "Sua atividade foi compartilhada com seus amigos."
+            : "Sua atividade foi salva como privada e só você consegue ver."
+      );
       navigation.navigate("Ajuda");
     } catch (error: any) {
       Alert.alert("Não foi possível compartilhar", error?.message || "Tente novamente.");
@@ -231,6 +248,7 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
         routeName,
         description,
         activityType,
+        visibility,
       });
 
       await createActivitySharePost({
@@ -242,11 +260,16 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
         caption,
         activityType,
         photoUris,
+        visibility,
       });
 
       Alert.alert(
         "Rota salva e compartilhada",
-        "Sua atividade já está no feed dos amigos com acesso à rota."
+        visibility === "public"
+          ? "Sua atividade foi compartilhada no app inteiro."
+          : visibility === "friends"
+            ? "Sua atividade foi compartilhada com seus amigos."
+            : "Sua atividade foi salva como privada."
       );
       navigation.navigate("Ajuda");
     } catch (error: any) {
@@ -432,6 +455,24 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
           placeholderTextColor="#6b7280"
         />
 
+        <Text style={styles.label}>Quem pode ver</Text>
+        <View style={styles.chipsRow}>
+          {VISIBILITY_OPTIONS.map((option) => {
+            const selected = visibility === option.value;
+            return (
+              <TouchableOpacity
+                key={option.value}
+                style={[styles.chip, selected ? styles.chipActive : null]}
+                onPress={() => setVisibility(option.value)}
+              >
+                <Text style={[styles.chipText, selected ? styles.chipTextActive : null]}>
+                  {option.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
         <Text style={styles.label}>Fotos da atividade (opcional)</Text>
         <TouchableOpacity style={styles.infoBtn} onPress={handlePickPhotos} disabled={saving || sharing}>
           <Ionicons name="images-outline" size={18} color="#fff" />
@@ -480,7 +521,13 @@ export default function ActivitySummaryScreen(props: ActivitySummaryScreenProps)
           ) : (
             <>
               <Ionicons name="share-social-outline" size={18} color="#fff" />
-              <Text style={styles.infoBtnText}>Compartilhar com amigos</Text>
+              <Text style={styles.infoBtnText}>
+                {visibility === "public"
+                  ? "Compartilhar no app inteiro"
+                  : visibility === "friends"
+                    ? "Compartilhar com amigos"
+                    : "Salvar compartilhamento privado"}
+              </Text>
             </>
           )}
         </TouchableOpacity>

@@ -17,7 +17,7 @@ import {
   calculatePace,
 } from "../utils/activityMetrics";
 import { toCoordinate } from "../utils/geo";
-import { registerSegmentAttemptsForActivity } from "./segmentService";
+import { getUserPrivacyZone, sanitizeRouteForPublicView } from "./privacyZoneService";
 
 export type {
   ActiveActivitySession,
@@ -40,6 +40,10 @@ type SaveRouteInput = {
   routeName: string;
   description?: string;
   activityType?: ActivityType;
+  difficulty?: string;
+  estimatedTime?: string | null;
+  terrain?: string | null;
+  visibility?: "public" | "friends" | "private";
 };
 
 const TRACKING_TASK_NAME = "tracktrail-background-location";
@@ -64,6 +68,7 @@ const AUTO_PAUSE_THRESHOLD_KMH_BY_ACTIVITY: Record<ActivityType, number> = {
 };
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let processingSyncQueue = false;
 
 const getTrackingDb = async () => {
   if (!dbPromise) {
@@ -83,6 +88,13 @@ const getTrackingDb = async () => {
           altitude REAL,
           timestamp INTEGER NOT NULL,
           PRIMARY KEY (session_id, seq)
+        );
+        CREATE TABLE IF NOT EXISTS sync_queue (
+          id TEXT PRIMARY KEY,
+          payload TEXT NOT NULL,
+          status TEXT DEFAULT 'pending',
+          attempts INTEGER DEFAULT 0,
+          created_at INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_tracking_points_session_seq
           ON tracking_points(session_id, seq);
@@ -502,18 +514,20 @@ const ensurePermissions = async () => {
   }
 };
 
-const startBackgroundTracking = async () => {
+const startBackgroundTracking = async (activityType: ActivityType) => {
   const alreadyStarted = await Location.hasStartedLocationUpdatesAsync(TRACKING_TASK_NAME);
   if (alreadyStarted) {
     return;
   }
 
+  const isHighSpeed = activityType === "bike" || activityType === "corrida";
+
   await Location.startLocationUpdatesAsync(TRACKING_TASK_NAME, {
-    accuracy: Location.Accuracy.Balanced,
-    distanceInterval: 8,
-    timeInterval: 3000,
-    deferredUpdatesDistance: 20,
-    deferredUpdatesInterval: 12000,
+    accuracy: isHighSpeed ? Location.Accuracy.Highest : Location.Accuracy.Balanced,
+    distanceInterval: isHighSpeed ? 5 : 10, // Metros entre atualizações
+    timeInterval: isHighSpeed ? 2000 : 5000, // Ms entre atualizações
+    deferredUpdatesDistance: isHighSpeed ? 15 : 30,
+    deferredUpdatesInterval: 10000,
     pausesUpdatesAutomatically: false,
     activityType: Location.ActivityType.Fitness,
     showsBackgroundLocationIndicator: true,
@@ -606,7 +620,7 @@ export const startActivityTracking = async (
     await saveSession(resumed);
 
     if (mode === "background") {
-      await startBackgroundTracking();
+      await startBackgroundTracking(resumed.activityType);
     }
 
     return { session: resumed, mode };
@@ -637,7 +651,7 @@ export const startActivityTracking = async (
   await saveSession(session);
 
   if (mode === "background") {
-    await startBackgroundTracking();
+    await startBackgroundTracking(session.activityType);
   }
 
   return { session, mode };
@@ -680,7 +694,7 @@ export const resumeActivityTracking = async () => {
   await saveSession(resumedSession);
 
   if (mode === "background") {
-    await startBackgroundTracking();
+    await startBackgroundTracking(resumedSession.activityType);
   }
 
   return {
@@ -785,6 +799,11 @@ export const saveFinishedSessionAsRoute = async (
   session: ActiveActivitySession,
   input: SaveRouteInput
 ) => {
+  const currentUid = auth.currentUser?.uid || "";
+  if (!currentUid || currentUid !== session.userId) {
+    throw new Error("Sessão inválida para salvar rota.");
+  }
+
   if (session.status !== "finished") {
     throw new Error("Finalize a atividade antes de salvar como rota.");
   }
@@ -807,115 +826,247 @@ export const saveFinishedSessionAsRoute = async (
   const firstPoint = path[0];
   const lastPoint = path[path.length - 1];
   const activityType = input.activityType || session.activityType;
-  const activitySaved = await saveFinishedSessionAsActivity(session, activityType);
+  const visibility = input.visibility || "public";
+  const durationSeconds = getSessionDurationSeconds(session);
+  const inferredDifficulty =
+    activityType === "bike"
+      ? "Média"
+      : activityType === "corrida"
+        ? "Difícil"
+        : activityType === "caminhada"
+          ? "Fácil"
+          : "Média";
+  const activitySaved = await saveFinishedSessionAsActivity(session, activityType, visibility);
 
   const userEmail = auth.currentUser?.email || "usuario@tracktrail";
 
-  const rotaRef = push(ref(database, "rotas_pendentes"));
+  const baseRoutePayload = {
+    nome: routeName,
+    titulo: routeName,
+    tipo: activityType,
+    dificuldade: input.difficulty?.trim() || inferredDifficulty,
+    distancia: `${session.distanceKm.toFixed(2)} km`,
+    tempoEstimado: input.estimatedTime?.trim() || formatDuration(durationSeconds),
+    duracaoSegundos: durationSeconds,
+    terreno: input.terrain?.trim() || "Não informado",
+    descricao: input.description?.trim() || "Rota gerada automaticamente por atividade GPS.",
+    startPoint: firstPoint,
+    endPoint: lastPoint,
+    rotaCompleta: path,
+    elevacaoGanhoM: Number(session.elevation.gainMeters.toFixed(1)),
+    elevacaoPerdaM: Number(session.elevation.lossMeters.toFixed(1)),
+    sugeridoPor: session.userId,
+    emailAutor: userEmail,
+    criadoEm: new Date().toISOString(),
+    origem: "activity_tracking",
+    activityId: activitySaved.activityId,
+    visibility,
+  };
+
+  const shouldSendToPublicReview = visibility === "public";
+  let publicPath = path;
+  let privacySanitized = false;
+  let privacyTrimStartPoints = 0;
+  let privacyTrimEndPoints = 0;
+
+  if (shouldSendToPublicReview) {
+    const zone = await getUserPrivacyZone(session.userId);
+    const sanitized = sanitizeRouteForPublicView(path, zone);
+    if (sanitized.publicPoints.length >= 2) {
+      publicPath = sanitized.publicPoints.map((point) => ({
+        latitude: point.latitude,
+        longitude: point.longitude,
+        altitude: typeof point.altitude === "number" ? point.altitude : null,
+      }));
+      privacySanitized = sanitized.sanitized;
+      privacyTrimStartPoints = sanitized.removedFromStart;
+      privacyTrimEndPoints = sanitized.removedFromEnd;
+    }
+  }
+
+  const publicStartPoint = publicPath[0] || firstPoint;
+  const publicEndPoint = publicPath[publicPath.length - 1] || lastPoint;
   try {
-    await set(rotaRef, {
-      nome: routeName,
-      tipo: activityType,
-      dificuldade: "Média",
-      distancia: `${session.distanceKm.toFixed(2)} km`,
-      descricao: input.description?.trim() || "Rota gerada automaticamente por atividade GPS.",
-      startPoint: firstPoint,
-      endPoint: lastPoint,
-      rotaCompleta: path,
-      elevacaoGanhoM: Number(session.elevation.gainMeters.toFixed(1)),
-      elevacaoPerdaM: Number(session.elevation.lossMeters.toFixed(1)),
-      sugeridoPor: session.userId,
-      emailAutor: userEmail,
-      status: "pendente",
-      criadoEm: new Date().toISOString(),
-      origem: "activity_tracking",
-      activityId: activitySaved.activityId,
+    if (shouldSendToPublicReview) {
+      const rotaRef = push(ref(database, "rotas_pendentes"));
+      await set(rotaRef, {
+        ...baseRoutePayload,
+        startPoint: publicStartPoint,
+        endPoint: publicEndPoint,
+        rotaCompleta: publicPath,
+        privacySanitized,
+        privacyTrimStartPoints,
+        privacyTrimEndPoints,
+        status: "pendente",
+      });
+
+      await saveSession(null);
+      return {
+        activityId: activitySaved.activityId,
+        routeId: rotaRef.key,
+        visibility,
+        reviewRequired: true,
+      };
+    }
+
+    const userRouteRef = push(ref(database, `users/${session.userId}/rotas_tracadas`));
+    await set(userRouteRef, {
+      ...baseRoutePayload,
+      status: "privada",
+      userId: session.userId,
+      userEmail: userEmail || null,
     });
+
+    await saveSession(null);
+    return {
+      activityId: activitySaved.activityId,
+      routeId: userRouteRef.key,
+      visibility,
+      reviewRequired: false,
+    };
   } catch (error) {
     throw new Error(normalizeFirebaseErrorMessage(error, "Não foi possível salvar a rota."));
   }
+};
 
-  await saveSession(null);
+const addToSyncQueue = async (id: string, payload: any) => {
+  const db = await getTrackingDb();
+  await db.runAsync(
+    "INSERT INTO sync_queue (id, payload, created_at) VALUES (?, ?, ?)",
+    id,
+    JSON.stringify(payload),
+    Date.now()
+  );
+};
 
-  return {
-    activityId: activitySaved.activityId,
-    routeId: rotaRef.key,
-  };
+export const getPendingSyncCount = async (): Promise<number> => {
+  const db = await getTrackingDb();
+  const row = await db.getFirstAsync<{ count: number }>("SELECT COUNT(*) as count FROM sync_queue WHERE status = 'pending'");
+  return row?.count || 0;
+};
+
+export const getPendingSyncActivities = async (): Promise<any[]> => {
+  const db = await getTrackingDb();
+  const rows = await db.getAllAsync<{ id: string, payload: string, status: string }>(
+    "SELECT id, payload, status FROM sync_queue WHERE status != 'synced'"
+  );
+
+  return rows.map(row => {
+    try {
+      const payload = JSON.parse(row.payload);
+      return {
+        ...payload,
+        id: row.id,
+        isPending: true,
+        status: row.status
+      };
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+};
+
+export const removePendingSyncActivity = async (id: string): Promise<void> => {
+  if (!id?.trim()) {
+    throw new Error("ID de atividade pendente inválido.");
+  }
+
+  const db = await getTrackingDb();
+  await db.runAsync("DELETE FROM sync_queue WHERE id = ?", id);
+};
+
+export const processSyncQueue = async () => {
+  if (processingSyncQueue) return;
+  processingSyncQueue = true;
+
+  try {
+    const db = await getTrackingDb();
+    const pending = await db.getAllAsync<{ id: string, payload: string, attempts: number }>(
+      "SELECT id, payload, attempts FROM sync_queue WHERE status = 'pending' ORDER BY created_at ASC LIMIT 5"
+    );
+
+    for (const item of pending) {
+      try {
+        const payload = JSON.parse(item.payload);
+        const activityRef = push(ref(database, `users/${payload.userId}/atividades`));
+        
+        // Remove campos locais que não devem ir pro Firebase
+        const { points, ...meta } = payload;
+        
+        await set(activityRef, {
+          ...meta,
+          rota: points.map((p: any) => ({
+            latitude: p.latitude,
+            longitude: p.longitude,
+            altitude: p.altitude ?? null
+          })),
+          status: "synced",
+          syncId: item.id
+        });
+
+        await db.runAsync("UPDATE sync_queue SET status = 'synced' WHERE id = ?", item.id);
+        console.log(`[sync] Atividade ${item.id} sincronizada com sucesso.`);
+      } catch (error: any) {
+        const newAttempts = item.attempts + 1;
+        const newStatus = newAttempts >= 5 ? "failed" : "pending";
+        await db.runAsync(
+          "UPDATE sync_queue SET attempts = ?, status = ? WHERE id = ?",
+          newAttempts,
+          newStatus,
+          item.id
+        );
+        console.warn(
+          `[sync] Falha ao sincronizar ${item.id}. Tentativa ${newAttempts}:`,
+          error?.message || String(error)
+        );
+      }
+    }
+  } finally {
+    processingSyncQueue = false;
+  }
 };
 
 export const saveFinishedSessionAsActivity = async (
   session: ActiveActivitySession,
-  activityTypeOverride?: ActivityType
+  activityTypeOverride?: ActivityType,
+  visibility: "public" | "friends" | "private" = "private"
 ) => {
   if (session.status !== "finished") {
     throw new Error("Finalize a atividade antes de salvar.");
   }
 
-  if (session.points.length < 2) {
-    throw new Error("Trajeto muito curto. Grave mais pontos antes de salvar.");
-  }
-
   const duration = getSessionDurationSeconds(session);
   const activityType = activityTypeOverride || session.activityType;
-  const path = session.points.map((point) => ({
-    latitude: point.latitude,
-    longitude: point.longitude,
-    altitude: typeof point.altitude === "number" ? point.altitude : null,
-  }));
   const avgSpeed = getAverageSpeedKmh(session);
   const avgPace = getAveragePaceMinPerKm(session);
 
-  const atividadeRef = push(ref(database, `users/${session.userId}/atividades`));
-  try {
-    await set(atividadeRef, {
-      tipo: activityType,
-      cidade: "Rota registrada via GPS",
-      data: new Date().toLocaleDateString("pt-BR"),
-      duracao: duration,
-      distancia: Number(session.distanceKm.toFixed(2)),
-      rota: path,
-      elevacaoGanhoM: Number(session.elevation.gainMeters.toFixed(1)),
-      elevacaoPerdaM: Number(session.elevation.lossMeters.toFixed(1)),
-      altitudeMinM:
-        typeof session.elevation.minAltitude === "number"
-          ? Number(session.elevation.minAltitude.toFixed(1))
-          : null,
-      altitudeMaxM:
-        typeof session.elevation.maxAltitude === "number"
-          ? Number(session.elevation.maxAltitude.toFixed(1))
-          : null,
-      velocidadeMediaKmh: Number(avgSpeed.toFixed(2)),
-      paceMedioMinKm: avgPace !== null ? Number(avgPace.toFixed(3)) : null,
-      estadoFinal: session.lastPauseReason ? `paused_${session.lastPauseReason}` : "recording",
-      criadoEm: new Date().toISOString(),
-      origem: "activity_tracking",
-      sessionId: session.id,
-    });
+  const payload = {
+    userId: session.userId,
+    tipo: activityType,
+    duracao: duration,
+    distancia: Number(session.distanceKm.toFixed(2)),
+    points: session.points,
+    elevacaoGanhoM: Number(session.elevation.gainMeters.toFixed(1)),
+    elevacaoPerdaM: Number(session.elevation.lossMeters.toFixed(1)),
+    altitudeMinM: session.elevation.minAltitude,
+    altitudeMaxM: session.elevation.maxAltitude,
+    velocidadeMediaKmh: Number(avgSpeed.toFixed(2)),
+    paceMedioMinKm: avgPace,
+    visibility,
+    criadoEm: new Date().toISOString(),
+    sessionId: session.id,
+  };
 
-    try {
-      await registerSegmentAttemptsForActivity({
-        userId: session.userId,
-        activityId: atividadeRef.key || "",
-        activityType,
-        points: session.points,
-      });
-    } catch (segmentError: any) {
-      console.warn(
-        "[segments] attempt registration failed:",
-        segmentError?.message || String(segmentError)
-      );
-    }
-  } catch (error) {
-    throw new Error(
-      normalizeFirebaseErrorMessage(error, "Não foi possível salvar a atividade.")
-    );
-  }
+  // 1. Salva na fila local primeiro (Garantia de Dados)
+  await addToSyncQueue(session.id, payload);
+
+  // 2. Tenta processar a fila imediatamente (se houver rede)
+  // Fazemos isso em background sem travar a UI
+  processSyncQueue().catch(() => {});
 
   return {
-    activityId: atividadeRef.key,
+    activityId: session.id,
     durationSeconds: duration,
-    path,
-    avgSpeed,
-    avgPace,
+    isQueued: true
   };
 };

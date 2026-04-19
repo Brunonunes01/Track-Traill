@@ -1,5 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { initializeApp } from "firebase/app";
+import Constants from "expo-constants";
+import { getApp, getApps, initializeApp } from "firebase/app";
 import {
   browserLocalPersistence,
   getAuth,
@@ -10,17 +11,83 @@ import { getDatabase, onValue, ref } from "firebase/database";
 import { getStorage } from "firebase/storage";
 import { Platform } from "react-native";
 
-const firebaseConfig = {
-  apiKey: "AIzaSyBlvFgxQhqUQYyE3LIchPnWvz5cNuYPj1k",
-  authDomain: "tracktrail-app.firebaseapp.com",
-  databaseURL: "https://tracktrail-app-default-rtdb.firebaseio.com",
-  projectId: "tracktrail-app",
-  storageBucket: "tracktrail-app.firebasestorage.app",
-  messagingSenderId: "248567456065",
-  appId: "1:248567456065:web:838f4da3defc88c8dd01c0",
+const expoConfig = Constants.expoConfig;
+const extraFirebaseConfig = (expoConfig?.extra as any)?.firebase || {};
+
+const isPlaceholderValue = (value: unknown) => String(value || "").trim().toUpperCase().startsWith("SET_VIA_");
+
+const normalizeConfigValue = (value: unknown) => {
+  const text = String(value || "").trim();
+  if (!text || isPlaceholderValue(text)) return "";
+  return text;
 };
 
-const app = initializeApp(firebaseConfig);
+const isValidDatabaseUrl = (value: unknown) => {
+  const text = String(value || "").trim();
+  if (!text) return false;
+
+  try {
+    const parsed = new URL(text);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+};
+
+const rawDatabaseUrl = normalizeConfigValue(
+  process.env.EXPO_PUBLIC_FIREBASE_DATABASE_URL || extraFirebaseConfig.databaseURL
+);
+export const isRealtimeDatabaseConfigured = isValidDatabaseUrl(rawDatabaseUrl);
+
+const firebaseConfig = {
+  apiKey: normalizeConfigValue(process.env.EXPO_PUBLIC_FIREBASE_API_KEY || extraFirebaseConfig.apiKey),
+  authDomain: normalizeConfigValue(
+    process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || extraFirebaseConfig.authDomain
+  ),
+  databaseURL: isValidDatabaseUrl(rawDatabaseUrl) ? rawDatabaseUrl : "",
+  projectId: normalizeConfigValue(
+    process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || extraFirebaseConfig.projectId
+  ),
+  storageBucket: normalizeConfigValue(
+    process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || extraFirebaseConfig.storageBucket
+  ),
+  messagingSenderId: normalizeConfigValue(
+    process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || extraFirebaseConfig.messagingSenderId
+  ),
+  appId: normalizeConfigValue(process.env.EXPO_PUBLIC_FIREBASE_APP_ID || extraFirebaseConfig.appId),
+};
+
+const requiredFirebaseFields: Array<keyof typeof firebaseConfig> = [
+  "apiKey",
+  "authDomain",
+  "projectId",
+  "storageBucket",
+  "messagingSenderId",
+  "appId",
+];
+
+const missingFirebaseFields = requiredFirebaseFields
+  .filter((key) => !String(firebaseConfig[key] || "").trim())
+  .map((key) => key);
+
+if (missingFirebaseFields.length > 0) {
+  throw new Error(
+    `[firebase] configuração ausente: ${missingFirebaseFields.join(
+      ", "
+    )}. Defina EXPO_PUBLIC_FIREBASE_* ou expo.extra.firebase.`
+  );
+}
+
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+
+const buildFallbackDatabaseUrl = () => {
+  const normalizedProjectId = String(firebaseConfig.projectId || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "")
+    .trim();
+  const safeProjectId = normalizedProjectId || "local-dev";
+  return `https://${safeProjectId}-default-rtdb.firebaseio.com`;
+};
 
 const getReactNativePersistenceSafe = () => {
   try {
@@ -59,7 +126,20 @@ const createAuth = () => {
 };
 
 export const auth = createAuth();
-export const database = getDatabase(app);
+export const database = (() => {
+  const configDatabaseUrl = String(firebaseConfig.databaseURL || "").trim();
+  if (isValidDatabaseUrl(configDatabaseUrl)) {
+    return getDatabase(app, configDatabaseUrl);
+  }
+
+  const fallbackDatabaseUrl = buildFallbackDatabaseUrl();
+  console.warn(
+    `[firebase] databaseURL inválida (${configDatabaseUrl || "vazia"}). ` +
+      `Aplicando fallback ${fallbackDatabaseUrl}. Defina EXPO_PUBLIC_FIREBASE_DATABASE_URL corretamente.`
+  );
+
+  return getDatabase(app, fallbackDatabaseUrl);
+})();
 export const storage = getStorage(app);
 
 const isDisconnectLikeError = (error: unknown) => {
@@ -87,6 +167,11 @@ export const normalizeFirebaseErrorMessage = (
 };
 
 if (Platform.OS !== "web") {
+  if (!isRealtimeDatabaseConfigured) {
+    console.warn(
+      "[firebase] Realtime Database não configurado. Defina EXPO_PUBLIC_FIREBASE_DATABASE_URL para ativar status de conexão."
+    );
+  }
   try {
     onValue(
       ref(database, ".info/connected"),

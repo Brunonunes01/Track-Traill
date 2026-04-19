@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import React from "react";
 import { StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { colors, radius, spacing, typography } from "../src/theme/designSystem";
 
 export default function AdminUserList({
   title,
@@ -40,7 +41,7 @@ export default function AdminUserList({
                   disabled={actionDisabled}
                   style={[styles.actionBtn, actionDisabled && styles.actionBtnDisabled]}
                 >
-                  <Ionicons name="person-remove-outline" size={16} color="#fff" />
+                  <Ionicons name="person-remove-outline" size={16} color={colors.white} />
                   <Text style={styles.actionText}>{actionLabel}</Text>
                 </TouchableOpacity>
               ) : null}
@@ -54,57 +55,55 @@ export default function AdminUserList({
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: "#1e1e1e",
-    borderRadius: 16,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: "#333",
-    padding: 16,
+    borderColor: colors.border,
+    padding: spacing.md,
   },
   title: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 12,
+    ...typography.cardTitle,
+    marginBottom: spacing.sm,
   },
   emptyText: {
-    color: "#aaa",
+    color: colors.textMuted,
     fontSize: 14,
   },
   userCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#161616",
+    backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: "#2b2b2b",
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 10,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: spacing.sm,
+    marginBottom: spacing.xs,
     gap: 10,
   },
   userName: {
-    color: "#fff",
+    color: colors.textPrimary,
     fontWeight: "700",
     fontSize: 15,
   },
   userEmail: {
-    color: "#aaa",
+    color: colors.textMuted,
     fontSize: 12,
     marginTop: 2,
   },
   badge: {
-    backgroundColor: "#2563eb",
-    borderRadius: 10,
+    backgroundColor: colors.secondary,
+    borderRadius: radius.sm,
     paddingVertical: 4,
     paddingHorizontal: 8,
   },
   badgeText: {
-    color: "#fff",
+    color: colors.white,
     fontSize: 10,
     fontWeight: "700",
   },
   actionBtn: {
-    backgroundColor: "#ef4444",
-    borderRadius: 10,
+    backgroundColor: colors.danger,
+    borderRadius: radius.sm,
     paddingVertical: 8,
     paddingHorizontal: 10,
     flexDirection: "row",
@@ -115,7 +114,7 @@ const styles = StyleSheet.create({
     opacity: 0.45,
   },
   actionText: {
-    color: "#fff",
+    color: colors.white,
     fontWeight: "700",
     fontSize: 11,
   },

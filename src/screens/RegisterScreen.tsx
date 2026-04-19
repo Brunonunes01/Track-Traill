@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { createUserWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, type User } from "firebase/auth";
 import React, { useState } from "react";
 import {
   Image,
@@ -49,18 +49,29 @@ export default function RegisterScreen({ navigation }: any) {
 
     try {
       setIsSubmitting(true);
+      let createdUser: User | null = null;
       const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), password);
       const user = userCredential.user;
+      createdUser = user;
 
-      await registerUserProfile({
-        uid: user.uid,
-        fullName: fullName.trim(),
-        username: normalizedUsername,
-        email: email.trim(),
-        birthDate: birthDate.trim(),
-        phone: phone.trim(),
-        address: address.trim(),
-      });
+      try {
+        await registerUserProfile({
+          uid: user.uid,
+          fullName: fullName.trim(),
+          username: normalizedUsername,
+          email: email.trim(),
+          birthDate: birthDate.trim(),
+          phone: phone.trim(),
+          address: address.trim(),
+        });
+      } catch (profileError) {
+        try {
+          await createdUser.delete();
+        } catch (deleteError) {
+          console.warn("[register] failed to rollback auth user:", deleteError);
+        }
+        throw profileError;
+      }
 
       setFullName("");
       setUsername("");

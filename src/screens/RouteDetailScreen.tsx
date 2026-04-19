@@ -3,6 +3,8 @@ import { useNavigation, useRoute } from "@react-navigation/native";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
+  Share,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,10 +13,19 @@ import {
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { auth } from "../../services/connectionFirebase";
 import AlertCard from "../components/AlertCard";
 import AlertMarker from "../components/AlertMarker";
 import { TrackTrailRoute, TrailAlert } from "../models/alerts";
+import { exportActivityToGpxFile } from "../services/activityFilesService";
 import { subscribeRouteAlerts } from "../services/alertService";
+import { deleteUserRoute } from "../services/routeService";
+import {
+  getOfflineRoute,
+  isOfflineRouteOutdated,
+  removeOfflineRoute,
+  saveOfflineRoute,
+} from "../storage/offlineRoutes";
 import { toCoordinate, toCoordinateArray } from "../utils/geo";
 
 type RouteDetailParams = {
@@ -57,6 +68,13 @@ export default function RouteDetailScreen(props: RouteDetailScreenProps) {
   const [alerts, setAlerts] = useState<TrailAlert[]>([]);
   const [loadingAlerts, setLoadingAlerts] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deletingRoute, setDeletingRoute] = useState(false);
+  const [offlineDownloadedAt, setOfflineDownloadedAt] = useState<string | null>(null);
+  const [offlineOutdated, setOfflineOutdated] = useState(false);
+  const [offlineAlertsSnapshot, setOfflineAlertsSnapshot] = useState<TrailAlert[]>([]);
+  const [savingOffline, setSavingOffline] = useState(false);
+  const [sharingRoute, setSharingRoute] = useState(false);
+  const [exportingRoute, setExportingRoute] = useState(false);
 
   useEffect(() => {
     if (!routeData?.id) {
@@ -77,7 +95,35 @@ export default function RouteDetailScreen(props: RouteDetailScreenProps) {
     );
 
     return () => unsubscribe();
-  }, [routeData?.id]);
+  }, [routeData]);
+
+  useEffect(() => {
+    let mounted = true;
+    const syncOfflineState = async () => {
+      if (!routeData?.id) {
+        if (mounted) setOfflineDownloadedAt(null);
+        return;
+      }
+      try {
+        const offlineEntry = await getOfflineRoute(routeData.id);
+        if (!mounted) return;
+        setOfflineDownloadedAt(offlineEntry?.downloadedAt || null);
+        setOfflineOutdated(isOfflineRouteOutdated(routeData, offlineEntry));
+        setOfflineAlertsSnapshot(Array.isArray(offlineEntry?.alertsSnapshot) ? offlineEntry.alertsSnapshot : []);
+      } catch {
+        if (mounted) {
+          setOfflineDownloadedAt(null);
+          setOfflineOutdated(false);
+          setOfflineAlertsSnapshot([]);
+        }
+      }
+    };
+
+    syncOfflineState();
+    return () => {
+      mounted = false;
+    };
+  }, [routeData]);
 
   const activeAlerts = useMemo(
     () => alerts.filter((item) => item.status === "ativo"),
@@ -100,6 +146,129 @@ export default function RouteDetailScreen(props: RouteDetailScreenProps) {
         ),
     [alerts]
   );
+  const currentUid = auth.currentUser?.uid || "";
+  const canDeleteRoute =
+    Boolean(routeData?.id) &&
+    Boolean(currentUid) &&
+    routeData?.userId === currentUid &&
+    routeData?.visibility !== "public";
+
+  const handleToggleOfflineRoute = async () => {
+    if (!routeData?.id || savingOffline) return;
+
+    try {
+      setSavingOffline(true);
+      if (offlineDownloadedAt && !offlineOutdated) {
+        await removeOfflineRoute(routeData.id);
+        setOfflineDownloadedAt(null);
+        setOfflineOutdated(false);
+        setOfflineAlertsSnapshot([]);
+        Alert.alert("Offline removido", "A rota foi removida do armazenamento offline.");
+        return;
+      }
+
+      const saved = await saveOfflineRoute(routeData, activeAlerts);
+      setOfflineDownloadedAt(saved.downloadedAt);
+      setOfflineOutdated(false);
+      setOfflineAlertsSnapshot(saved.alertsSnapshot || []);
+      Alert.alert(
+        offlineOutdated ? "Offline atualizado" : "Rota baixada",
+        "Rota salva para uso offline. Sem internet, o traçado e os dados da rota continuam disponíveis."
+      );
+    } catch (saveError: any) {
+      Alert.alert("Erro", saveError?.message || "Não foi possível salvar a rota offline.");
+    } finally {
+      setSavingOffline(false);
+    }
+  };
+
+  const handleShareRoute = async () => {
+    if (sharingRoute) return;
+    try {
+      setSharingRoute(true);
+      const message =
+        `${routeData.titulo}\n` +
+        `${routeData.descricao || "Rota Track-Traill"}\n` +
+        `Tipo: ${routeData.tipo || "N/D"} | Distância: ${routeData.distancia || "N/D"} | Dificuldade: ${routeData.dificuldade || "N/D"}`;
+      await Share.share({ title: routeData.titulo, message });
+    } catch (shareError: any) {
+      Alert.alert("Erro", shareError?.message || "Não foi possível compartilhar a rota.");
+    } finally {
+      setSharingRoute(false);
+    }
+  };
+
+  const handleExportRouteGpx = async () => {
+    if (exportingRoute) return;
+
+    const basePoints = safeRoutePath;
+    if (!basePoints.length && !safeStartPoint) {
+      Alert.alert("Exportação indisponível", "Esta rota não possui pontos válidos para exportar.");
+      return;
+    }
+
+    const pointsForExport =
+      basePoints.length >= 2
+        ? basePoints
+        : [
+            safeStartPoint,
+            routeData.endPoint ? toCoordinate(routeData.endPoint) : safeStartPoint,
+          ].filter((item): item is { latitude: number; longitude: number } => Boolean(item));
+
+    if (pointsForExport.length < 2) {
+      Alert.alert("Exportação indisponível", "São necessários ao menos 2 pontos para exportar GPX.");
+      return;
+    }
+
+    try {
+      setExportingRoute(true);
+      const now = Date.now();
+      const result = await exportActivityToGpxFile({
+        title: routeData.titulo || "Rota Track-Traill",
+        description: routeData.descricao || "Rota exportada do app Track-Traill",
+        fileName: `rota_${routeData.id}`,
+        points: pointsForExport.map((point, index) => ({
+          latitude: point.latitude,
+          longitude: point.longitude,
+          altitude: null,
+          timestamp: now + index * 1000,
+        })),
+      });
+
+      Alert.alert(
+        "Exportação concluída",
+        result.shared ? "Arquivo GPX pronto para compartilhar." : `Arquivo salvo em cache: ${result.uri}`
+      );
+    } catch (exportError: any) {
+      Alert.alert("Erro", exportError?.message || "Não foi possível exportar a rota em GPX.");
+    } finally {
+      setExportingRoute(false);
+    }
+  };
+
+  const handleDeleteRoute = () => {
+    if (!routeData?.id || !currentUid || !canDeleteRoute) return;
+
+    Alert.alert("Excluir rota", "Deseja apagar esta rota do seu espaço?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Excluir",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            setDeletingRoute(true);
+            await deleteUserRoute(currentUid, routeData.id);
+            Alert.alert("Rota excluída", "A rota foi removida com sucesso.");
+            navigation.goBack();
+          } catch (deleteError: any) {
+            Alert.alert("Erro", deleteError?.message || "Não foi possível excluir a rota.");
+          } finally {
+            setDeletingRoute(false);
+          }
+        },
+      },
+    ]);
+  };
 
   if (!routeData) {
     return (
@@ -169,6 +338,91 @@ export default function RouteDetailScreen(props: RouteDetailScreenProps) {
           </View>
         </View>
 
+        <TouchableOpacity
+          style={[styles.offlineBtn, offlineDownloadedAt ? styles.offlineBtnActive : null]}
+          onPress={handleToggleOfflineRoute}
+          disabled={savingOffline}
+        >
+          {savingOffline ? (
+            <ActivityIndicator size="small" color="#fff" />
+          ) : (
+            <>
+              <Ionicons
+                name={offlineDownloadedAt ? "cloud-done-outline" : "cloud-download-outline"}
+                size={16}
+                color="#fff"
+              />
+              <Text style={styles.offlineBtnText}>
+                {offlineDownloadedAt
+                  ? offlineOutdated
+                    ? "Atualizar versão offline"
+                    : "Remover do offline"
+                  : "Baixar rota offline"}
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <Text style={styles.offlineHint}>
+          {offlineDownloadedAt
+            ? `Disponível offline desde ${new Date(offlineDownloadedAt).toLocaleString("pt-BR")}`
+            : "Baixe esta rota para manter trajeto e detalhes sem internet. O mapa base pode ficar limitado offline."}
+        </Text>
+        {offlineDownloadedAt && offlineOutdated ? (
+          <Text style={styles.offlineUpdateHint}>
+            Uma versão mais recente desta rota foi detectada. Toque em Atualizar versão offline.
+          </Text>
+        ) : null}
+
+        <View style={styles.routeActionRow}>
+          <TouchableOpacity
+            style={styles.secondaryActionBtn}
+            onPress={handleShareRoute}
+            disabled={sharingRoute}
+          >
+            {sharingRoute ? (
+              <ActivityIndicator size="small" color="#d1d5db" />
+            ) : (
+              <>
+                <Ionicons name="share-social-outline" size={18} color="#d1d5db" />
+                <Text style={styles.secondaryActionText}>Compartilhar rota</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.primaryActionBtn}
+            onPress={handleExportRouteGpx}
+            disabled={exportingRoute}
+          >
+            {exportingRoute ? (
+              <ActivityIndicator size="small" color="#000" />
+            ) : (
+              <>
+                <Ionicons name="download-outline" size={18} color="#000" />
+                <Text style={styles.primaryActionText}>Exportar GPX</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {canDeleteRoute ? (
+          <TouchableOpacity
+            style={styles.deleteRouteBtn}
+            onPress={handleDeleteRoute}
+            disabled={deletingRoute}
+          >
+            {deletingRoute ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="trash-outline" size={16} color="#fff" />
+                <Text style={styles.deleteRouteText}>Excluir rota</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        ) : null}
+
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Alertas da rota</Text>
           <View style={styles.sectionActions}>
@@ -218,6 +472,19 @@ export default function RouteDetailScreen(props: RouteDetailScreenProps) {
               />
             ))
           : null}
+
+        {!loadingAlerts && error && offlineAlertsSnapshot.length > 0 ? (
+          <>
+            <Text style={styles.offlineAlertsTitle}>Alertas offline salvos com a rota</Text>
+            {offlineAlertsSnapshot.map((item) => (
+              <AlertCard
+                key={`offline-${item.id}`}
+                alert={item}
+                onPress={() => navigation.navigate("AlertDetail", { alertData: item })}
+              />
+            ))}
+          </>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -268,6 +535,83 @@ const styles = StyleSheet.create({
     padding: 10,
     borderWidth: 1,
     borderColor: "#1f2937",
+  },
+  offlineBtn: {
+    marginBottom: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "rgba(34,197,94,0.45)",
+    backgroundColor: "rgba(34,197,94,0.22)",
+    borderRadius: 12,
+    paddingVertical: 12,
+  },
+  offlineBtnActive: {
+    borderColor: "rgba(59,130,246,0.45)",
+    backgroundColor: "rgba(30,64,175,0.4)",
+  },
+  offlineBtnText: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+  },
+  offlineHint: {
+    color: "#93c5fd",
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 8,
+  },
+  offlineUpdateHint: {
+    color: "#facc15",
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 8,
+  },
+  routeActionRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 10,
+  },
+  secondaryActionBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#374151",
+    backgroundColor: "#111827",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  secondaryActionText: {
+    color: "#d1d5db",
+    fontWeight: "700",
+    fontSize: 13,
+  },
+  primaryActionBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: "#facc15",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  primaryActionText: {
+    color: "#000",
+    fontWeight: "800",
+    fontSize: 13,
+  },
+  offlineAlertsTitle: {
+    color: "#93c5fd",
+    fontSize: 13,
+    fontWeight: "700",
+    marginBottom: 6,
   },
   metricLabel: {
     color: "#9ca3af",
@@ -325,6 +669,24 @@ const styles = StyleSheet.create({
     color: "#111827",
     fontWeight: "700",
     fontSize: 12,
+  },
+  deleteRouteBtn: {
+    marginTop: 4,
+    marginBottom: 8,
+    backgroundColor: "rgba(239,68,68,0.9)",
+    borderWidth: 1,
+    borderColor: "rgba(248,113,113,0.6)",
+    borderRadius: 10,
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+  },
+  deleteRouteText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 13,
   },
   centerRow: {
     flexDirection: "row",

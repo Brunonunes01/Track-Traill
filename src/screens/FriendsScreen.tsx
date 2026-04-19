@@ -1,19 +1,27 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
+import { LinearGradient } from "expo-linear-gradient";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  ImageBackground,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
+import {
+  AppButton,
+  AppCard,
+  AppInput,
+  EmptyState,
+  LoadingState,
+  SectionTitle,
+} from "../components/ui";
 import { ensureUserProfileCompatibility } from "../services/userService";
 import {
   acceptFriendRequest,
@@ -22,6 +30,7 @@ import {
   subscribeFriendships,
   subscribeUsers,
 } from "../../services/friendsService";
+import { colors, layout, radius, spacing, typography } from "../theme/designSystem";
 
 type AppUser = {
   uid: string;
@@ -48,6 +57,14 @@ const getPublicUsername = (user?: AppUser) => {
   return `@${user.username || "sem_username"}`;
 };
 
+const getInitials = (user?: AppUser) => {
+  const name = getUserDisplayName(user).trim();
+  if (!name) return "U";
+  const parts = name.split(" ").filter(Boolean);
+  if (parts.length === 1) return parts[0].charAt(0).toUpperCase();
+  return `${parts[0].charAt(0)}${parts[parts.length - 1].charAt(0)}`.toUpperCase();
+};
+
 const sortByCreatedAtDesc = (a: Friendship, b: Friendship) => {
   return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
 };
@@ -59,6 +76,8 @@ type FriendsScreenProps = {
 export default function FriendsScreen(props: FriendsScreenProps) {
   const hookNavigation = useNavigation<any>();
   const navigation = props.navigation || hookNavigation;
+  const insets = useSafeAreaInsets();
+
   const [uid, setUid] = useState("");
   const [loading, setLoading] = useState(true);
   const [savingRequestId, setSavingRequestId] = useState<string | null>(null);
@@ -210,289 +229,391 @@ export default function FriendsScreen(props: FriendsScreenProps) {
     }
   };
 
+  const renderUserRow = (
+    user: AppUser | undefined,
+    actionNode: React.ReactNode,
+    key: string
+  ) => (
+    <View key={key} style={styles.rowCard}>
+      <View style={styles.avatarCircle}>
+        <Text style={styles.avatarInitial}>{getInitials(user)}</Text>
+      </View>
+
+      <View style={styles.rowMain}>
+        <Text style={styles.rowTitle} numberOfLines={1}>
+          {getUserDisplayName(user)}
+        </Text>
+        <Text style={styles.rowSubtitle} numberOfLines={1}>
+          {getPublicUsername(user)}
+        </Text>
+      </View>
+
+      <View>{actionNode}</View>
+    </View>
+  );
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#1e4db7" />
-        <Text style={styles.loadingText}>Carregando amigos...</Text>
+        <LoadingState label="Carregando conexões..." />
       </View>
     );
   }
 
   return (
-    <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
-      <View style={styles.overlay}>
-        <ScrollView contentContainerStyle={styles.content}>
-          <TouchableOpacity
-            style={styles.feedButton}
-            onPress={() => navigation.navigate("Ajuda")}
-          >
-            <Ionicons name="people-circle-outline" size={18} color="#d1d5db" />
-            <Text style={styles.feedButtonText}>Abrir feed dos amigos</Text>
-          </TouchableOpacity>
+    <View style={styles.screen}>
+      <LinearGradient
+        colors={["#08101D", "#0B1220", "#121F36"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
 
-          <Text style={styles.sectionTitle}>Buscar usuários</Text>
-          <View style={styles.searchCard}>
-            <TextInput
-              style={styles.searchInput}
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={{
+          paddingHorizontal: layout.screenPaddingHorizontal,
+          paddingTop: insets.top + spacing.md,
+          paddingBottom: Math.max(insets.bottom + spacing.xl, spacing.xxl),
+          gap: spacing.md,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        <SectionTitle
+          title="Conexões"
+          subtitle="Adicione amigos e acompanhe suas trilhas em conjunto"
+        />
+
+        <AppCard style={styles.statsCard}>
+          <View style={styles.statsRow}>
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{friends.length}</Text>
+              <Text style={styles.statLabel}>Amigos</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{pendingReceived.length}</Text>
+              <Text style={styles.statLabel}>Recebidas</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statItem}>
+              <Text style={styles.statValue}>{pendingSent.length}</Text>
+              <Text style={styles.statLabel}>Enviadas</Text>
+            </View>
+          </View>
+
+          <AppButton
+            title="Abrir feed dos amigos"
+            variant="secondary"
+            onPress={() => navigation.navigate("Ajuda")}
+            icon={<Ionicons name="people-circle-outline" size={17} color={colors.textPrimary} />}
+            style={styles.feedBtn}
+          />
+        </AppCard>
+
+        <View>
+          <SectionTitle title="Buscar Usuários" subtitle="Procure por @username ou nome" />
+          <AppCard>
+            <AppInput
               value={search}
               onChangeText={setSearch}
-              placeholder="Buscar por @username ou nome"
-              placeholderTextColor="#8a8a8a"
+              placeholder="Ex: @joao ou Maria"
               autoCapitalize="none"
+              rightElement={<Ionicons name="search-outline" size={16} color={colors.textMuted} />}
             />
 
-            {searchResults.length === 0 && search.trim() ? (
-              <Text style={styles.emptyText}>Nenhum usuário encontrado.</Text>
+            {search.trim().length === 0 ? (
+              <Text style={styles.helperText}>Digite para começar a buscar.</Text>
             ) : null}
 
-            {searchResults.map((item) => {
-              const relation = getRelationshipStatus(item.uid);
-              const canSend = !relation || relation.status === "rejected";
+            {searchResults.length === 0 && search.trim() ? (
+              <EmptyState
+                title="Nenhum usuário encontrado"
+                description="Tente outro nome ou username."
+                icon="search-outline"
+              />
+            ) : (
+              <View style={styles.listWrap}>
+                {searchResults.map((item) => {
+                  const relation = getRelationshipStatus(item.uid);
+                  const canSend = !relation || relation.status === "rejected";
 
-              return (
-                <View key={item.uid} style={styles.rowCard}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowTitle}>{getUserDisplayName(item)}</Text>
-                    <Text style={styles.rowSubtitle}>{getPublicUsername(item)}</Text>
-                  </View>
+                  return renderUserRow(
+                    item,
+                    canSend ? (
+                      <AppButton
+                        title="Adicionar"
+                        onPress={() => handleSendRequest(item.uid)}
+                        loading={sendingToUid === item.uid}
+                        style={styles.compactBtn}
+                        textStyle={styles.compactBtnText}
+                      />
+                    ) : (
+                      <View style={styles.statusBadge}>
+                        <Text style={styles.statusBadgeText}>
+                          {relation?.status === "accepted" ? "Amigo" : "Pendente"}
+                        </Text>
+                      </View>
+                    ),
+                    `search-${item.uid}`
+                  );
+                })}
+              </View>
+            )}
+          </AppCard>
+        </View>
 
-                  {canSend ? (
-                    <TouchableOpacity
-                      style={styles.primaryAction}
-                      onPress={() => handleSendRequest(item.uid)}
-                      disabled={sendingToUid === item.uid}
-                    >
-                      {sendingToUid === item.uid ? (
-                        <ActivityIndicator size="small" color="#fff" />
-                      ) : (
-                        <Text style={styles.primaryActionText}>Adicionar</Text>
-                      )}
-                    </TouchableOpacity>
-                  ) : (
-                    <View style={styles.statusBadge}>
-                      <Text style={styles.statusText}>
-                        {relation?.status === "accepted" ? "Amigo" : "Pendente"}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              );
-            })}
-          </View>
-
-          <Text style={styles.sectionTitle}>Solicitações recebidas</Text>
-          <View style={styles.blockCard}>
+        <View>
+          <SectionTitle
+            title="Solicitações Recebidas"
+            subtitle={`${pendingReceived.length} aguardando sua resposta`}
+          />
+          <AppCard>
             {pendingReceived.length === 0 ? (
-              <Text style={styles.emptyText}>Nenhuma solicitação recebida.</Text>
+              <EmptyState
+                title="Sem solicitações"
+                description="Quando alguém te adicionar, aparecerá aqui."
+                icon="mail-unread-outline"
+              />
             ) : (
-              pendingReceived.map((request) => {
-                const sender = usersById[request.senderId];
-                return (
-                  <View key={request.id} style={styles.rowCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.rowTitle}>{getUserDisplayName(sender)}</Text>
-                      <Text style={styles.rowSubtitle}>{getPublicUsername(sender)}</Text>
-                    </View>
+              <View style={styles.listWrap}>
+                {pendingReceived.map((request) => {
+                  const sender = usersById[request.senderId];
+                  const isSaving = savingRequestId === request.id;
 
-                    <TouchableOpacity
-                      style={styles.acceptBtn}
-                      onPress={() => handleRequestAction(request.id, "accept")}
-                      disabled={savingRequestId === request.id}
-                    >
-                      <Ionicons name="checkmark" size={18} color="#fff" />
-                    </TouchableOpacity>
+                  return renderUserRow(
+                    sender,
+                    <View style={styles.dualActions}>
+                      <TouchableOpacity
+                        style={styles.acceptBtn}
+                        onPress={() => handleRequestAction(request.id, "accept")}
+                        disabled={isSaving}
+                      >
+                        {isSaving ? (
+                          <ActivityIndicator size="small" color={colors.white} />
+                        ) : (
+                          <Ionicons name="checkmark" size={17} color={colors.white} />
+                        )}
+                      </TouchableOpacity>
 
-                    <TouchableOpacity
-                      style={styles.rejectBtn}
-                      onPress={() => handleRequestAction(request.id, "reject")}
-                      disabled={savingRequestId === request.id}
-                    >
-                      <Ionicons name="close" size={18} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
-                );
-              })
+                      <TouchableOpacity
+                        style={styles.rejectBtn}
+                        onPress={() => handleRequestAction(request.id, "reject")}
+                        disabled={isSaving}
+                      >
+                        <Ionicons name="close" size={17} color={colors.white} />
+                      </TouchableOpacity>
+                    </View>,
+                    `received-${request.id}`
+                  );
+                })}
+              </View>
             )}
-          </View>
+          </AppCard>
+        </View>
 
-          <Text style={styles.sectionTitle}>Solicitações enviadas</Text>
-          <View style={styles.blockCard}>
+        <View>
+          <SectionTitle
+            title="Solicitações Enviadas"
+            subtitle={`${pendingSent.length} pendentes`}
+          />
+          <AppCard>
             {pendingSent.length === 0 ? (
-              <Text style={styles.emptyText}>Nenhuma solicitação enviada.</Text>
+              <EmptyState
+                title="Sem envios pendentes"
+                description="Solicitações enviadas aparecerão aqui."
+                icon="send-outline"
+              />
             ) : (
-              pendingSent.map((request) => {
-                const receiver = usersById[request.receiverId];
-                return (
-                  <View key={request.id} style={styles.rowCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.rowTitle}>{getUserDisplayName(receiver)}</Text>
-                      <Text style={styles.rowSubtitle}>{getPublicUsername(receiver)}</Text>
-                    </View>
-                    <View style={styles.statusBadge}>
-                      <Text style={styles.statusText}>Pendente</Text>
-                    </View>
-                  </View>
-                );
-              })
+              <View style={styles.listWrap}>
+                {pendingSent.map((request) => {
+                  const receiver = usersById[request.receiverId];
+                  return renderUserRow(
+                    receiver,
+                    <View style={styles.pendingBadge}>
+                      <Text style={styles.pendingBadgeText}>Pendente</Text>
+                    </View>,
+                    `sent-${request.id}`
+                  );
+                })}
+              </View>
             )}
-          </View>
+          </AppCard>
+        </View>
 
-          <Text style={styles.sectionTitle}>Amigos</Text>
-          <View style={styles.blockCard}>
+        <View>
+          <SectionTitle
+            title="Amigos"
+            subtitle={`${friends.length} conexões ativas`}
+          />
+          <AppCard>
             {friends.length === 0 ? (
-              <Text style={styles.emptyText}>Você ainda não possui amigos aceitos.</Text>
+              <EmptyState
+                title="Você ainda não possui amigos"
+                description="Use a busca acima para adicionar seus primeiros contatos."
+                icon="people-outline"
+              />
             ) : (
-              friends.map((friend) => (
-                <View key={friend.uid} style={styles.rowCard}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowTitle}>{getUserDisplayName(friend)}</Text>
-                    <Text style={styles.rowSubtitle}>{getPublicUsername(friend)}</Text>
-                  </View>
-                  <Ionicons name="people" size={18} color="#1e4db7" />
-                </View>
-              ))
+              <View style={styles.listWrap}>
+                {friends.map((friend) =>
+                  renderUserRow(
+                    friend,
+                    <Ionicons name="people" size={18} color={colors.info} />,
+                    `friend-${friend.uid}`
+                  )
+                )}
+              </View>
             )}
-          </View>
-        </ScrollView>
-      </View>
-    </ImageBackground>
+          </AppCard>
+        </View>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
+  container: {
+    flex: 1,
+    backgroundColor: "transparent",
+  },
   loadingContainer: {
     flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    backgroundColor: "#111",
+    backgroundColor: colors.background,
   },
-  loadingText: {
-    color: "#bbb",
-    marginTop: 10,
+  statsCard: {
+    gap: spacing.md,
   },
-  background: {
-    flex: 1,
-    resizeMode: "cover",
-  },
-  overlay: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.75)",
-  },
-  content: {
-    padding: 16,
-    paddingBottom: 30,
-  },
-  feedButton: {
-    backgroundColor: "#111827",
-    borderWidth: 1,
-    borderColor: "#374151",
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    marginBottom: 10,
+  statsRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    justifyContent: "space-between",
   },
-  feedButtonText: {
-    color: "#d1d5db",
-    fontWeight: "700",
+  statItem: {
+    flex: 1,
+    alignItems: "center",
   },
-  sectionTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 10,
-    marginTop: 8,
+  statDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: colors.border,
   },
-  searchCard: {
-    backgroundColor: "#1e1e1e",
-    borderWidth: 1,
-    borderColor: "#303030",
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 12,
+  statValue: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    fontWeight: "800",
   },
-  blockCard: {
-    backgroundColor: "#1e1e1e",
-    borderWidth: 1,
-    borderColor: "#303030",
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 12,
+  statLabel: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: 2,
   },
-  searchInput: {
-    borderWidth: 1,
-    borderColor: "#3b3b3b",
-    backgroundColor: "#151515",
-    color: "#fff",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 10,
+  feedBtn: {
+    minHeight: 44,
+  },
+  helperText: {
+    marginTop: spacing.sm,
+    color: colors.textMuted,
+    fontSize: 12,
+  },
+  listWrap: {
+    marginTop: spacing.sm,
+    gap: spacing.xs,
   },
   rowCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#151515",
     borderWidth: 1,
-    borderColor: "#2a2a2a",
-    borderRadius: 10,
-    padding: 10,
-    marginBottom: 8,
-    gap: 8,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceAlt,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+  },
+  avatarCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(30, 58, 138, 0.28)",
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.36)",
+  },
+  avatarInitial: {
+    color: colors.textPrimary,
+    fontWeight: "800",
+    fontSize: 12,
+  },
+  rowMain: {
+    flex: 1,
   },
   rowTitle: {
-    color: "#fff",
-    fontWeight: "700",
+    ...typography.cardTitle,
     fontSize: 14,
+    lineHeight: 18,
   },
   rowSubtitle: {
-    color: "#aaa",
+    color: colors.textMuted,
     fontSize: 12,
-    marginTop: 2,
+    marginTop: 1,
   },
-  primaryAction: {
-    backgroundColor: "#1e4db7",
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+  compactBtn: {
+    minHeight: 36,
+    paddingHorizontal: spacing.sm,
+    borderRadius: radius.sm,
   },
-  primaryActionText: {
-    color: "#fff",
-    fontWeight: "700",
+  compactBtnText: {
     fontSize: 12,
-  },
-  acceptBtn: {
-    backgroundColor: "#22c55e",
-    borderRadius: 8,
-    width: 34,
-    height: 34,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  rejectBtn: {
-    backgroundColor: "#ef4444",
-    borderRadius: 8,
-    width: 34,
-    height: 34,
-    justifyContent: "center",
-    alignItems: "center",
   },
   statusBadge: {
-    backgroundColor: "#303030",
-    borderRadius: 8,
-    paddingHorizontal: 10,
+    borderRadius: radius.round,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surfaceSoft,
+    paddingHorizontal: spacing.sm,
     paddingVertical: 6,
   },
-  statusText: {
-    color: "#ddd",
+  statusBadgeText: {
+    color: colors.textSecondary,
     fontSize: 11,
     fontWeight: "700",
   },
-  emptyText: {
-    color: "#aaa",
-    fontSize: 13,
+  dualActions: {
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
+  acceptBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.sm,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.success,
+  },
+  rejectBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.sm,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.danger,
+  },
+  pendingBadge: {
+    borderRadius: radius.round,
+    borderWidth: 1,
+    borderColor: "rgba(245, 158, 11, 0.5)",
+    backgroundColor: "rgba(245, 158, 11, 0.16)",
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 6,
+  },
+  pendingBadgeText: {
+    color: "#fcd34d",
+    fontSize: 11,
+    fontWeight: "700",
   },
 });

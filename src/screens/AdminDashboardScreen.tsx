@@ -9,7 +9,6 @@ import {
   Alert,
   Dimensions,
   FlatList,
-  ImageBackground,
   Modal,
   ScrollView,
   StyleSheet,
@@ -19,10 +18,12 @@ import {
   View,
 } from "react-native";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AdminUserList from "../../components/AdminUserList";
 import { database } from "../../services/connectionFirebase";
 import { toCoordinate, toCoordinateArray } from "../utils/geo";
 import { TrailAlert } from "../models/alerts";
+import { colors, layout, radius, spacing, typography } from "../theme/designSystem";
 import {
   markAlertAsResolved,
   removeAlertByAdmin,
@@ -38,7 +39,7 @@ import {
 } from "../../services/adminService";
 
 type AdminSection = "add" | "admins" | "users" | "tools" | "routes" | "settings" | "alerts";
-type AlertFilter = "todos" | "ativos" | "expirados" | "denunciados" | "resolvidos" | "removidos";
+type AlertFilter = "todos" | "ativos" | "expirados" | "denunciados" | "resolvidos";
 
 type AdminRouteItem = {
   id: string;
@@ -53,10 +54,21 @@ type AdminDashboardScreenProps = {
   navigation?: any;
 };
 
+const SECTION_ITEMS: { key: AdminSection; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { key: "add", label: "Adicionar", icon: "person-add-outline" },
+  { key: "admins", label: "Administradores", icon: "shield-checkmark-outline" },
+  { key: "users", label: "Usuários", icon: "people-outline" },
+  { key: "tools", label: "Ferramentas", icon: "construct-outline" },
+  { key: "settings", label: "Sistema", icon: "settings-outline" },
+  { key: "routes", label: "Rotas", icon: "map-outline" },
+  { key: "alerts", label: "Alertas", icon: "warning-outline" },
+];
+
 export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
   const hookNavigation = useNavigation<any>();
   const navigation = props.navigation || hookNavigation;
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [checkingAccess, setCheckingAccess] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -169,18 +181,29 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
     () => users.filter((user) => user.role !== "admin").length,
     [users]
   );
+  const visibleModerationAlerts = useMemo(
+    () => alerts.filter((item) => item.status !== "removido"),
+    [alerts]
+  );
+  const activeAlertsCount = useMemo(
+    () => visibleModerationAlerts.filter((item) => item.status === "ativo").length,
+    [visibleModerationAlerts]
+  );
+  const reportedAlertsCount = useMemo(
+    () => visibleModerationAlerts.filter((item) => (item.reportCount || 0) > 0).length,
+    [visibleModerationAlerts]
+  );
 
   const filteredAlerts = useMemo(() => {
-    return alerts.filter((item) => {
+    return visibleModerationAlerts.filter((item) => {
       if (alertFilter === "todos") return true;
       if (alertFilter === "ativos") return item.status === "ativo";
       if (alertFilter === "expirados") return item.status === "expirado";
       if (alertFilter === "resolvidos") return item.status === "resolvido";
-      if (alertFilter === "removidos") return item.status === "removido";
       if (alertFilter === "denunciados") return (item.reportCount || 0) > 0;
       return true;
     });
-  }, [alertFilter, alerts]);
+  }, [alertFilter, visibleModerationAlerts]);
 
   const formatAlertDate = (value?: string) => {
     if (!value) return "Data não informada";
@@ -259,9 +282,21 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
       await set(oficialRef, {
         titulo: rotaSelecionada.nome,
         tipo: rotaSelecionada.tipo,
+        visibility: "public",
+        dificuldade: rotaSelecionada.dificuldade || "Não informada",
+        tempoEstimado: rotaSelecionada.tempoEstimado || null,
+        duracaoSegundos:
+          typeof rotaSelecionada.duracaoSegundos === "number" ? rotaSelecionada.duracaoSegundos : null,
+        terreno: rotaSelecionada.terreno || null,
+        descricao: rotaSelecionada.descricao || "Sem descrição disponível.",
+        distancia: rotaSelecionada.distancia || null,
         startPoint: safeStartPoint,
         endPoint: safeEndPoint,
         rotaCompleta: safePath,
+        elevacaoGanhoM:
+          typeof rotaSelecionada.elevacaoGanhoM === "number" ? rotaSelecionada.elevacaoGanhoM : null,
+        elevacaoPerdaM:
+          typeof rotaSelecionada.elevacaoPerdaM === "number" ? rotaSelecionada.elevacaoPerdaM : null,
         autor: rotaSelecionada.emailAutor,
         aprovadoEm: new Date().toISOString(),
       });
@@ -368,70 +403,30 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
   const selectedPath = useMemo(() => toCoordinateArray(rotaSelecionada?.rotaCompleta), [rotaSelecionada]);
 
   const renderSectionButtons = () => (
-    <View style={styles.sectionButtons}>
-      <TouchableOpacity
-        style={[styles.sectionBtn, activeSection === "add" && styles.sectionBtnActive]}
-        onPress={() => setActiveSection("add")}
-      >
-        <Text style={[styles.sectionBtnText, activeSection === "add" && styles.sectionBtnTextActive]}>
-          Adicionar administrador
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.sectionBtn, activeSection === "admins" && styles.sectionBtnActive]}
-        onPress={() => setActiveSection("admins")}
-      >
-        <Text style={[styles.sectionBtnText, activeSection === "admins" && styles.sectionBtnTextActive]}>
-          Lista de administradores
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.sectionBtn, activeSection === "users" && styles.sectionBtnActive]}
-        onPress={() => setActiveSection("users")}
-      >
-        <Text style={[styles.sectionBtnText, activeSection === "users" && styles.sectionBtnTextActive]}>
-          Gerenciar usuários
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.sectionBtn, activeSection === "tools" && styles.sectionBtnActive]}
-        onPress={() => setActiveSection("tools")}
-      >
-        <Text style={[styles.sectionBtnText, activeSection === "tools" && styles.sectionBtnTextActive]}>
-          Ferramentas do app
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.sectionBtn, activeSection === "settings" && styles.sectionBtnActive]}
-        onPress={() => setActiveSection("settings")}
-      >
-        <Text style={[styles.sectionBtnText, activeSection === "settings" && styles.sectionBtnTextActive]}>
-          Configurações do sistema
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.sectionBtn, activeSection === "routes" && styles.sectionBtnActive]}
-        onPress={() => setActiveSection("routes")}
-      >
-        <Text style={[styles.sectionBtnText, activeSection === "routes" && styles.sectionBtnTextActive]}>
-          Gerenciar rotas
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.sectionBtn, activeSection === "alerts" && styles.sectionBtnActive]}
-        onPress={() => setActiveSection("alerts")}
-      >
-        <Text style={[styles.sectionBtnText, activeSection === "alerts" && styles.sectionBtnTextActive]}>
-          Moderação de alertas
-        </Text>
-      </TouchableOpacity>
-    </View>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.sectionButtons}
+      style={styles.sectionButtonsScroll}
+    >
+      {SECTION_ITEMS.map((item) => {
+        const isActive = activeSection === item.key;
+        return (
+          <TouchableOpacity
+            key={item.key}
+            style={[styles.sectionBtn, isActive && styles.sectionBtnActive]}
+            onPress={() => setActiveSection(item.key)}
+          >
+            <Ionicons
+              name={item.icon}
+              size={16}
+              color={isActive ? colors.white : colors.textSecondary}
+            />
+            <Text style={[styles.sectionBtnText, isActive && styles.sectionBtnTextActive]}>{item.label}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
   );
 
   const renderSectionContent = () => {
@@ -445,7 +440,7 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
           <TextInput
             style={styles.input}
             placeholder="Email do usuário"
-            placeholderTextColor="#888"
+            placeholderTextColor={colors.textMuted}
             value={adminEmail}
             onChangeText={setAdminEmail}
             autoCapitalize="none"
@@ -457,10 +452,10 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
             disabled={isAddingAdmin}
           >
             {isAddingAdmin ? (
-              <ActivityIndicator size="small" color="#000" />
+              <ActivityIndicator size="small" color={colors.white} />
             ) : (
               <>
-                <Ionicons name="person-add-outline" size={18} color="#000" />
+                <Ionicons name="person-add-outline" size={18} color={colors.white} />
                 <Text style={styles.primaryActionText}>Adicionar como administrador</Text>
               </>
             )}
@@ -509,11 +504,11 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
             Área reservada para parâmetros globais do app e controles de segurança.
           </Text>
           <View style={styles.systemItem}>
-            <Ionicons name="shield-checkmark-outline" size={20} color="#22c55e" />
+            <Ionicons name="shield-checkmark-outline" size={20} color={colors.success} />
             <Text style={styles.systemItemText}>Controle de acesso por role ativo</Text>
           </View>
           <View style={styles.systemItem}>
-            <Ionicons name="server-outline" size={20} color="#60a5fa" />
+            <Ionicons name="server-outline" size={20} color={colors.info} />
             <Text style={styles.systemItemText}>Conectado ao Firebase Realtime Database</Text>
           </View>
         </View>
@@ -523,7 +518,7 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
     if (activeSection === "alerts") {
       return (
         <View style={styles.sectionCard}>
-          <Text style={styles.sectionTitle}>Moderação de alertas ({alerts.length})</Text>
+          <Text style={styles.sectionTitle}>Moderação de alertas ({visibleModerationAlerts.length})</Text>
           <Text style={styles.sectionDescription}>
             Filtre por status e trate denúncias para manter o sistema confiável.
           </Text>
@@ -536,7 +531,6 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
                 { key: "expirados", label: "Expirados" },
                 { key: "denunciados", label: "Denunciados" },
                 { key: "resolvidos", label: "Resolvidos" },
-                { key: "removidos", label: "Removidos" },
               ] as { key: AlertFilter; label: string }[]
             ).map((item) => (
               <TouchableOpacity
@@ -561,7 +555,7 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
 
           {filteredAlerts.length === 0 ? (
             <View style={styles.emptyTools}>
-              <Ionicons name="shield-checkmark-outline" size={48} color="#94a3b8" />
+              <Ionicons name="shield-checkmark-outline" size={48} color={colors.textMuted} />
               <Text style={styles.emptyToolsText}>Nenhum alerta para o filtro atual.</Text>
             </View>
           ) : (
@@ -599,10 +593,10 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
                       onPress={() => handleResolveAlertAdmin(item.id)}
                     >
                       {workingAlertId === item.id ? (
-                        <ActivityIndicator size="small" color="#d1fae5" />
+                        <ActivityIndicator size="small" color="#dcfce7" />
                       ) : (
                         <>
-                          <Ionicons name="checkmark-circle-outline" size={16} color="#d1fae5" />
+                          <Ionicons name="checkmark-circle-outline" size={16} color="#dcfce7" />
                           <Text style={styles.alertResolveText}>Resolver</Text>
                         </>
                       )}
@@ -613,7 +607,7 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
                       disabled={workingAlertId === item.id || item.status === "removido"}
                       onPress={() => handleRemoveAlertAdmin(item.id)}
                     >
-                      <Ionicons name="trash-outline" size={16} color="#fecaca" />
+                      <Ionicons name="trash-outline" size={16} color="#fee2e2" />
                       <Text style={styles.alertRemoveText}>Remover</Text>
                     </TouchableOpacity>
                   </View>
@@ -635,7 +629,7 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
 
           {officialRoutes.length === 0 ? (
             <View style={styles.emptyTools}>
-              <Ionicons name="trail-sign-outline" size={52} color="#94a3b8" />
+              <Ionicons name="trail-sign-outline" size={52} color={colors.textMuted} />
               <Text style={styles.emptyToolsText}>Nenhuma rota oficial cadastrada.</Text>
             </View>
           ) : (
@@ -646,7 +640,7 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
               renderItem={({ item }) => (
                 <View style={styles.routeCard}>
                   <View style={styles.routeCardIcon}>
-                    <Ionicons name="map-outline" size={24} color="#60a5fa" />
+                    <Ionicons name="map-outline" size={24} color={colors.info} />
                   </View>
 
                   <View style={{ flex: 1 }}>
@@ -665,9 +659,9 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
                     onPress={() => handleDeleteOfficialRoute(item)}
                   >
                     {deletingRouteId === item.id ? (
-                      <ActivityIndicator size="small" color="#ef4444" />
+                      <ActivityIndicator size="small" color={colors.danger} />
                     ) : (
-                      <Ionicons name="trash-outline" size={20} color="#ef4444" />
+                      <Ionicons name="trash-outline" size={20} color={colors.danger} />
                     )}
                   </TouchableOpacity>
                 </View>
@@ -687,7 +681,7 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
 
         {pendentes.length === 0 ? (
           <View style={styles.emptyTools}>
-            <Ionicons name="checkmark-done-circle-outline" size={56} color="#22c55e" />
+            <Ionicons name="checkmark-done-circle-outline" size={56} color={colors.success} />
             <Text style={styles.emptyToolsText}>Nenhuma rota pendente no momento.</Text>
           </View>
         ) : (
@@ -698,14 +692,14 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
             renderItem={({ item }) => (
               <TouchableOpacity style={styles.routeCard} onPress={() => setRotaSelecionada(item)}>
                 <View style={styles.routeCardIcon}>
-                  <Ionicons name="map-outline" size={24} color="#ffd700" />
+                  <Ionicons name="map-outline" size={24} color={colors.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.routeCardTitle}>{item.nome}</Text>
                   <Text style={styles.routeCardMeta}>Tipo: {item.tipo}</Text>
                   <Text style={styles.routeCardMeta}>Autor: {item.emailAutor}</Text>
                 </View>
-                <Ionicons name="chevron-forward" size={20} color="#888" />
+                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
               </TouchableOpacity>
             )}
           />
@@ -715,35 +709,67 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
   };
 
   return (
-    <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
-      <LinearGradient colors={["rgba(0,0,0,0.85)", "rgba(0,0,0,0.95)"]} style={styles.overlay}>
-        <View style={styles.header}>
-          <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-            <Ionicons name="arrow-back" size={28} color="#fff" />
-          </TouchableOpacity>
-          <Text style={styles.title}>Admin Dashboard</Text>
-          <View style={{ width: 28 }} />
+    <View style={styles.screen}>
+      <LinearGradient
+        colors={["#08101D", "#0B1220", "#121F36"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+
+      <View style={[styles.header, { paddingTop: insets.top + spacing.sm }]}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
+          <Ionicons name="arrow-back" size={24} color={colors.textPrimary} />
+        </TouchableOpacity>
+        <View style={styles.headerTextWrap}>
+          <Text style={styles.title}>Painel Admin</Text>
+          <Text style={styles.headerSubtitle}>Gestão de usuários, rotas e moderação</Text>
         </View>
+        <View style={styles.headerSpacer} />
+      </View>
 
-        {checkingAccess ? (
-          <View style={styles.centerState}>
-            <ActivityIndicator size="large" color="#ffd700" />
-            <Text style={styles.centerStateText}>Validando permissões...</Text>
+      {checkingAccess ? (
+        <View style={styles.centerState}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.centerStateText}>Validando permissões...</Text>
+        </View>
+      ) : !isAdmin ? (
+        <View style={styles.centerState}>
+          <Ionicons name="lock-closed-outline" size={52} color={colors.danger} />
+          <Text style={styles.centerStateText}>Acesso restrito para administradores.</Text>
+        </View>
+      ) : (
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom + spacing.xl, spacing.xxl) }]}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.statsRow}>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{admins.length}</Text>
+              <Text style={styles.statLabel}>Admins</Text>
+            </View>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{pendentes.length}</Text>
+              <Text style={styles.statLabel}>Pendências</Text>
+            </View>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{activeAlertsCount}</Text>
+              <Text style={styles.statLabel}>Alertas ativos</Text>
+            </View>
+            <View style={styles.statCard}>
+              <Text style={styles.statValue}>{reportedAlertsCount}</Text>
+              <Text style={styles.statLabel}>Denunciados</Text>
+            </View>
           </View>
-        ) : !isAdmin ? (
-          <View style={styles.centerState}>
-            <Ionicons name="lock-closed-outline" size={52} color="#ef4444" />
-            <Text style={styles.centerStateText}>Acesso restrito para administradores.</Text>
-          </View>
-        ) : (
-          <ScrollView contentContainerStyle={styles.content}>
-            {renderSectionButtons()}
-            {renderSectionContent()}
-          </ScrollView>
-        )}
 
-        <Modal visible={!!rotaSelecionada} animationType="slide">
-          <View style={{ flex: 1, backgroundColor: "#000" }}>
+          {renderSectionButtons()}
+          {renderSectionContent()}
+        </ScrollView>
+      )}
+
+      <Modal visible={!!rotaSelecionada} animationType="slide">
+        <View style={styles.modalRoot}>
             {rotaSelecionada && selectedStartPoint ? (
               <MapView
                 style={styles.map}
@@ -780,26 +806,20 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
               </View>
             ) : null}
 
-            <View style={styles.modalPanel}>
+          <View style={styles.modalPanel}>
               <Text style={styles.modalTitle}>{rotaSelecionada?.nome}</Text>
               <Text style={styles.modalSubtitle}>
                 A rota parece segura e adequada para publicação?
               </Text>
 
               <View style={styles.modalActions}>
-                <TouchableOpacity
-                  style={[styles.modalActionBtn, { backgroundColor: "#ef4444" }]}
-                  onPress={handleRejeitarRota}
-                >
-                  <Ionicons name="close" size={18} color="#fff" />
+                <TouchableOpacity style={[styles.modalActionBtn, styles.rejectBtn]} onPress={handleRejeitarRota}>
+                  <Ionicons name="close" size={18} color={colors.white} />
                   <Text style={styles.modalActionText}>Rejeitar</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={[styles.modalActionBtn, { backgroundColor: "#22c55e" }]}
-                  onPress={handleAprovarRota}
-                >
-                  <Ionicons name="checkmark" size={18} color="#fff" />
+                <TouchableOpacity style={[styles.modalActionBtn, styles.approveBtn]} onPress={handleAprovarRota}>
+                  <Ionicons name="checkmark" size={18} color={colors.white} />
                   <Text style={styles.modalActionText}>Aprovar</Text>
                 </TouchableOpacity>
               </View>
@@ -807,98 +827,141 @@ export default function AdminDashboardScreen(props: AdminDashboardScreenProps) {
               <TouchableOpacity style={styles.modalBackBtn} onPress={() => setRotaSelecionada(null)}>
                 <Text style={styles.modalBackText}>Voltar</Text>
               </TouchableOpacity>
-            </View>
           </View>
-        </Modal>
-      </LinearGradient>
-    </ImageBackground>
+        </View>
+      </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  background: { flex: 1, resizeMode: "cover" },
-  overlay: { flex: 1 },
+  screen: { flex: 1, backgroundColor: colors.background },
+  scroll: { flex: 1 },
   header: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    paddingTop: 50,
-    paddingHorizontal: 20,
-    paddingBottom: 20,
+    paddingHorizontal: layout.screenPaddingHorizontal,
+    paddingBottom: spacing.md,
+    gap: spacing.sm,
   },
-  backButton: { padding: 5 },
-  title: { color: "#fff", fontSize: 22, fontWeight: "bold" },
-  centerState: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },
-  centerStateText: { color: "#ccc", fontSize: 15 },
-  content: { paddingHorizontal: 20, paddingBottom: 40, gap: 14 },
-  sectionButtons: { gap: 10 },
-  sectionBtn: {
-    backgroundColor: "#1b1b1b",
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: "#333",
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTextWrap: { flex: 1 },
+  headerSpacer: { width: 40 },
+  title: { ...typography.sectionTitle, fontSize: 22, lineHeight: 28 },
+  headerSubtitle: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
+  centerState: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12 },
+  centerStateText: { color: colors.textSecondary, fontSize: 15 },
+  content: {
+    paddingHorizontal: layout.screenPaddingHorizontal,
+    gap: spacing.md,
+  },
+  statsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+  },
+  statCard: {
+    minWidth: "48%",
+    flexGrow: 1,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  statValue: {
+    color: colors.textPrimary,
+    fontSize: 22,
+    lineHeight: 26,
+    fontWeight: "800",
+  },
+  statLabel: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  sectionButtonsScroll: { marginTop: spacing.xs },
+  sectionButtons: { gap: spacing.xs, paddingRight: spacing.md },
+  sectionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.round,
+    paddingVertical: 9,
+    paddingHorizontal: spacing.md,
   },
   sectionBtnActive: {
-    backgroundColor: "#ffd700",
-    borderColor: "#ffd700",
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
-  sectionBtnText: { color: "#ddd", fontWeight: "700", fontSize: 14 },
-  sectionBtnTextActive: { color: "#000" },
+  sectionBtnText: { color: colors.textSecondary, fontWeight: "700", fontSize: 13 },
+  sectionBtnTextActive: { color: colors.white },
   sectionCard: {
-    backgroundColor: "#1e1e1e",
-    borderRadius: 16,
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
     borderWidth: 1,
-    borderColor: "#333",
-    padding: 16,
+    borderColor: colors.border,
+    padding: spacing.md,
   },
-  sectionTitle: { color: "#fff", fontSize: 18, fontWeight: "700", marginBottom: 6 },
-  sectionDescription: { color: "#aaa", fontSize: 13, marginBottom: 12 },
+  sectionTitle: { ...typography.cardTitle, marginBottom: 6 },
+  sectionDescription: { color: colors.textMuted, fontSize: 13, marginBottom: spacing.sm },
   input: {
-    backgroundColor: "#121212",
+    backgroundColor: colors.backgroundAlt,
     borderWidth: 1,
-    borderColor: "#333",
-    color: "#fff",
-    borderRadius: 12,
+    borderColor: colors.border,
+    color: colors.textPrimary,
+    borderRadius: radius.md,
     paddingHorizontal: 14,
     paddingVertical: 12,
     marginBottom: 12,
   },
   primaryActionBtn: {
-    backgroundColor: "#ffd700",
-    borderRadius: 12,
+    backgroundColor: colors.primary,
+    borderRadius: radius.md,
     paddingVertical: 13,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 7,
   },
-  primaryActionText: { color: "#000", fontWeight: "700", fontSize: 14 },
+  primaryActionText: { color: colors.white, fontWeight: "700", fontSize: 14 },
   systemItem: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    backgroundColor: "#161616",
+    backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: "#2c2c2c",
-    borderRadius: 10,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
     padding: 10,
     marginBottom: 8,
   },
-  systemItemText: { color: "#ddd", fontSize: 13 },
+  systemItemText: { color: colors.textSecondary, fontSize: 13 },
   emptyTools: {
     paddingVertical: 24,
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
   },
-  emptyToolsText: { color: "#aaa", fontSize: 14 },
+  emptyToolsText: { color: colors.textMuted, fontSize: 14 },
   routeCard: {
-    backgroundColor: "#161616",
+    backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: "#2c2c2c",
-    borderRadius: 12,
+    borderColor: colors.border,
+    borderRadius: radius.md,
     padding: 12,
     flexDirection: "row",
     alignItems: "center",
@@ -908,13 +971,13 @@ const styles = StyleSheet.create({
   routeCardIcon: {
     width: 40,
     height: 40,
-    borderRadius: 10,
+    borderRadius: radius.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(255, 215, 0, 0.12)",
+    backgroundColor: "rgba(56, 189, 248, 0.12)",
   },
-  routeCardTitle: { color: "#fff", fontWeight: "700", fontSize: 14 },
-  routeCardMeta: { color: "#aaa", fontSize: 12, marginTop: 2 },
+  routeCardTitle: { color: colors.textPrimary, fontWeight: "700", fontSize: 14 },
+  routeCardMeta: { color: colors.textMuted, fontSize: 12, marginTop: 2 },
   alertFilterRow: {
     flexDirection: "row",
     flexWrap: "wrap",
@@ -923,29 +986,29 @@ const styles = StyleSheet.create({
   },
   alertFilterChip: {
     borderWidth: 1,
-    borderColor: "#374151",
-    borderRadius: 999,
+    borderColor: colors.border,
+    borderRadius: radius.round,
     paddingHorizontal: 10,
     paddingVertical: 7,
-    backgroundColor: "#111827",
+    backgroundColor: colors.backgroundAlt,
   },
   alertFilterChipActive: {
-    borderColor: "#fbbf24",
-    backgroundColor: "rgba(251,191,36,0.18)",
+    borderColor: colors.primary,
+    backgroundColor: "rgba(252, 76, 2, 0.18)",
   },
   alertFilterText: {
-    color: "#cbd5e1",
+    color: colors.textSecondary,
     fontWeight: "600",
     fontSize: 12,
   },
   alertFilterTextActive: {
-    color: "#fde68a",
+    color: colors.textPrimary,
   },
   alertAdminCard: {
-    backgroundColor: "#161616",
+    backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: "#2c2c2c",
-    borderRadius: 12,
+    borderColor: colors.border,
+    borderRadius: radius.md,
     padding: 12,
     gap: 5,
     marginBottom: 10,
@@ -957,28 +1020,28 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   alertAdminType: {
-    color: "#f8fafc",
+    color: colors.textPrimary,
     fontWeight: "700",
     fontSize: 13,
     textTransform: "capitalize",
   },
   alertAdminStatus: {
-    color: "#cbd5e1",
+    color: colors.textSecondary,
     fontSize: 12,
     fontWeight: "700",
   },
   alertAdminDescription: {
-    color: "#e5e7eb",
+    color: colors.textPrimary,
     fontSize: 13,
     lineHeight: 19,
     marginBottom: 2,
   },
   alertAdminMeta: {
-    color: "#94a3b8",
+    color: colors.textMuted,
     fontSize: 12,
   },
   alertAdminReportItem: {
-    color: "#cbd5e1",
+    color: colors.textSecondary,
     fontSize: 12,
   },
   alertAdminActions: {
@@ -989,9 +1052,9 @@ const styles = StyleSheet.create({
   alertResolveBtn: {
     flex: 1,
     borderWidth: 1,
-    borderColor: "rgba(16,185,129,0.5)",
-    backgroundColor: "rgba(6,78,59,0.45)",
-    borderRadius: 10,
+    borderColor: "rgba(34,197,94,0.6)",
+    backgroundColor: "rgba(34,197,94,0.18)",
+    borderRadius: radius.sm,
     minHeight: 38,
     alignItems: "center",
     justifyContent: "center",
@@ -999,16 +1062,16 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   alertResolveText: {
-    color: "#d1fae5",
+    color: "#dcfce7",
     fontWeight: "700",
     fontSize: 12,
   },
   alertRemoveBtn: {
     flex: 1,
     borderWidth: 1,
-    borderColor: "rgba(239,68,68,0.45)",
-    backgroundColor: "rgba(127,29,29,0.25)",
-    borderRadius: 10,
+    borderColor: "rgba(239,68,68,0.65)",
+    backgroundColor: "rgba(239,68,68,0.14)",
+    borderRadius: radius.sm,
     minHeight: 38,
     alignItems: "center",
     justifyContent: "center",
@@ -1016,32 +1079,33 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   alertRemoveText: {
-    color: "#fecaca",
+    color: "#fee2e2",
     fontWeight: "700",
     fontSize: 12,
   },
   deleteRouteBtn: {
     width: 42,
     height: 42,
-    borderRadius: 12,
+    borderRadius: radius.md,
     borderWidth: 1,
-    borderColor: "rgba(239,68,68,0.45)",
-    backgroundColor: "rgba(127,29,29,0.22)",
+    borderColor: "rgba(239,68,68,0.65)",
+    backgroundColor: "rgba(239,68,68,0.14)",
     alignItems: "center",
     justifyContent: "center",
     marginLeft: 8,
   },
   map: { width: Dimensions.get("window").width, height: Dimensions.get("window").height * 0.65 },
+  modalRoot: { flex: 1, backgroundColor: colors.black },
   modalMapFallback: {
     width: Dimensions.get("window").width,
     height: Dimensions.get("window").height * 0.65,
     alignItems: "center",
     justifyContent: "center",
     gap: 10,
-    backgroundColor: "#111827",
+    backgroundColor: colors.backgroundAlt,
   },
   modalMapFallbackText: {
-    color: "#e5e7eb",
+    color: colors.textPrimary,
     fontSize: 14,
     textAlign: "center",
     paddingHorizontal: 20,
@@ -1050,13 +1114,13 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 0,
     width: "100%",
-    backgroundColor: "#121212",
+    backgroundColor: colors.surface,
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     padding: 22,
   },
-  modalTitle: { color: "#fff", fontSize: 21, fontWeight: "700", marginBottom: 4 },
-  modalSubtitle: { color: "#aaa", fontSize: 14, marginBottom: 16 },
+  modalTitle: { color: colors.textPrimary, fontSize: 21, fontWeight: "700", marginBottom: 4 },
+  modalSubtitle: { color: colors.textMuted, fontSize: 14, marginBottom: 16 },
   modalActions: { flexDirection: "row", gap: 12, marginBottom: 10 },
   modalActionBtn: {
     flex: 1,
@@ -1067,7 +1131,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
   },
-  modalActionText: { color: "#fff", fontWeight: "700" },
+  rejectBtn: { backgroundColor: colors.danger },
+  approveBtn: { backgroundColor: colors.success },
+  modalActionText: { color: colors.white, fontWeight: "700" },
   modalBackBtn: { alignItems: "center", paddingVertical: 10 },
-  modalBackText: { color: "#aaa", fontWeight: "700" },
+  modalBackText: { color: colors.textMuted, fontWeight: "700" },
 });

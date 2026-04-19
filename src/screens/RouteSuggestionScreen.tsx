@@ -125,12 +125,23 @@ export default function RouteSuggestionScreen() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let settled = false;
+    const loadingGuard = setTimeout(() => {
+      if (settled) return;
+      setLoading(false);
+      setDataNotice((prev) => prev || "Não foi possível atualizar as rotas agora. Exibindo dados disponíveis.");
+    }, 9000);
+
     const unsubscribeOfficialRoutes = subscribeOfficialRoutes(
       (routes) => {
+        settled = true;
+        clearTimeout(loadingGuard);
         setOfficialRoutes(routes);
         setLoading(false);
       },
       (message) => {
+        settled = true;
+        clearTimeout(loadingGuard);
         setLoading(false);
         setDataNotice(message || null);
       }
@@ -149,6 +160,7 @@ export default function RouteSuggestionScreen() {
     }
 
     return () => {
+      clearTimeout(loadingGuard);
       unsubscribeOfficialRoutes();
       unsubscribeUserRoutes();
     };

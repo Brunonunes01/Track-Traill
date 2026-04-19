@@ -54,6 +54,7 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [loadingLocation, setLoadingLocation] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const availableTypes = useMemo(() => ALERT_TYPES, []);
 
   const mapRegion = useMemo(
     () =>
@@ -184,9 +185,9 @@ export default function AlertFormScreen(props: AlertFormScreenProps) {
           {initialParams.routeName || "Sem rota vinculada (alerta geral de localização)"}
         </Text>
 
-        <Text style={styles.label}>Tipo de alerta</Text>
+        <Text style={styles.label}>Tipo do alerta</Text>
         <View style={styles.typeGrid}>
-          {ALERT_TYPES.map((alertType) => {
+          {availableTypes.map((alertType) => {
             const meta = ALERT_TYPE_META[alertType];
             const active = type === alertType;
             return (

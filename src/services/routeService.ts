@@ -1,11 +1,16 @@
 import { User } from "firebase/auth";
-import { onValue, push, ref, set } from "firebase/database";
-import { database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
+import { onValue, push, ref, remove, set } from "firebase/database";
+import { auth, database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 import { TrackTrailRoute } from "../models/alerts";
 import { loadOfflineCache, saveOfflineCache } from "../storage/offlineCache";
+import { listOfflineRoutes } from "../storage/offlineRoutes";
 
 const OFFLINE_CACHE_OFFICIAL_ROUTES_KEY = "official_routes";
 const OFFLINE_CACHE_USER_ROUTES_PREFIX = "user_routes:";
+const isPermissionDeniedMessage = (message?: string | null) => {
+  const normalized = String(message || "").toLowerCase();
+  return normalized.includes("permission_denied") || normalized.includes("permissão");
+};
 
 const toNumber = (value: unknown): number | null => {
   if (typeof value === "number") return value;
@@ -57,6 +62,11 @@ const toStringSafe = (value: unknown): string | undefined => {
   return undefined;
 };
 
+const toNullableNumber = (value: unknown): number | null => {
+  const parsed = toNumber(value);
+  return parsed === null ? null : parsed;
+};
+
 const toBooleanSafe = (value: unknown): boolean | undefined => {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -89,9 +99,20 @@ const normalizeRoute = (id: string, raw: any): TrackTrailRoute => {
     id,
     titulo: String(raw?.titulo || raw?.nome || "Rota sem nome"),
     tipo: String(raw?.tipo || "Trilha"),
+    userId: toStringSafe(raw?.userId || raw?.sugeridoPor),
+    userEmail: toStringSafe(raw?.userEmail || raw?.emailAutor) || null,
+    visibility:
+      raw?.visibility === "friends" || raw?.visibility === "private"
+        ? raw.visibility
+        : "public",
     descricao: raw?.descricao ? String(raw.descricao) : "Sem descrição disponível.",
     dificuldade: raw?.dificuldade ? String(raw.dificuldade) : "Não informada",
     distancia: raw?.distancia ? String(raw.distancia) : undefined,
+    tempoEstimado: toStringSafe(raw?.tempoEstimado || raw?.tempo_estimado) || null,
+    duracaoSegundos: toNullableNumber(raw?.duracaoSegundos ?? raw?.duracao_segundos),
+    terreno: toStringSafe(raw?.terreno) || null,
+    elevacaoGanhoM: toNullableNumber(raw?.elevacaoGanhoM ?? raw?.elevacao_ganho_m),
+    elevacaoPerdaM: toNullableNumber(raw?.elevacaoPerdaM ?? raw?.elevacao_perda_m),
     city,
     state,
     country,
@@ -106,10 +127,26 @@ const normalizeRoute = (id: string, raw: any): TrackTrailRoute => {
   };
 };
 
+const mergeRoutesById = (base: TrackTrailRoute[], extra: TrackTrailRoute[]) => {
+  const byId = new Map<string, TrackTrailRoute>();
+  base.forEach((route) => {
+    if (route?.id) byId.set(route.id, route);
+  });
+  extra.forEach((route) => {
+    if (route?.id) byId.set(route.id, route);
+  });
+  return Array.from(byId.values());
+};
+
 type SaveManualRouteInput = {
   title: string;
   type: string;
   difficulty?: string;
+  estimatedTime?: string | null;
+  terrain?: string | null;
+  durationSeconds?: number | null;
+  elevationGainM?: number | null;
+  elevationLossM?: number | null;
   description?: string;
   points: { latitude: number; longitude: number }[];
   distanceKm: number;
@@ -120,6 +157,13 @@ export const subscribeOfficialRoutes = (
   onError?: (message: string) => void
 ) => {
   const routesRef = ref(database, "rotas_oficiais");
+
+  // Carrega cache local imediatamente para evitar tela vazia ou erro de timeout
+  loadOfflineCache<TrackTrailRoute[]>(OFFLINE_CACHE_OFFICIAL_ROUTES_KEY).then((cache) => {
+    if (cache?.data?.length) {
+      onChange(cache.data);
+    }
+  }).catch(() => {});
 
   return onValue(
     routesRef,
@@ -132,16 +176,30 @@ export const subscribeOfficialRoutes = (
       const raw = snapshot.val();
       const routes = Object.keys(raw)
         .map((key) => normalizeRoute(key, raw[key]))
-        .filter((route) => route.startPoint);
+        .filter((route) => route.startPoint && (route.visibility || "public") === "public");
 
       onChange(routes);
       saveOfflineCache(OFFLINE_CACHE_OFFICIAL_ROUTES_KEY, routes);
     },
     async (error) => {
       const fallback = await loadOfflineCache<TrackTrailRoute[]>(OFFLINE_CACHE_OFFICIAL_ROUTES_KEY);
-      if (fallback?.data?.length) {
-        onChange(fallback.data);
-        onError?.("Sem conexão com o servidor. Exibindo rotas oficiais em cache offline.");
+      const downloadedRoutes = (await listOfflineRoutes()).map((item) => item.route);
+      const downloadedPublic = downloadedRoutes.filter(
+        (route) => route.startPoint && (route.visibility || "public") === "public"
+      );
+      const combinedFallback = mergeRoutesById(fallback?.data || [], downloadedPublic);
+
+      if (combinedFallback.length) {
+        onChange(combinedFallback);
+        // Só reporta erro se for algo crítico (permissão)
+        const errorMessage = normalizeFirebaseErrorMessage(error);
+        if (isPermissionDeniedMessage(errorMessage)) {
+          onError?.(errorMessage);
+        } else {
+           // Mensagem padronizada que a HomeScreen ignora na UI (via isOfflineFallbackMessage)
+           onError?.("Sem conexão. Exibindo rotas em cache offline.");
+           console.log("[routes] Falling back to offline cache due to connection issue.");
+        }
         return;
       }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar rotas."));
@@ -155,6 +213,14 @@ export const subscribeUserRoutes = (
   onError?: (message: string) => void
 ) => {
   const routesRef = ref(database, `users/${userId}/rotas_tracadas`);
+  const cacheKey = `${OFFLINE_CACHE_USER_ROUTES_PREFIX}${userId}`;
+
+  // Carrega cache local imediatamente
+  loadOfflineCache<TrackTrailRoute[]>(cacheKey).then((cache) => {
+    if (cache?.data?.length) {
+      onChange(cache.data);
+    }
+  }).catch(() => {});
 
   return onValue(
     routesRef,
@@ -166,19 +232,29 @@ export const subscribeUserRoutes = (
 
       const raw = snapshot.val();
       const routes = Object.keys(raw)
-        .map((key) => normalizeRoute(key, raw[key]))
+        .map((key) => {
+          const normalized = normalizeRoute(key, raw[key]);
+          return normalized.userId ? normalized : { ...normalized, userId };
+        })
         .filter((route) => route.startPoint);
 
       onChange(routes);
-      saveOfflineCache(`${OFFLINE_CACHE_USER_ROUTES_PREFIX}${userId}`, routes);
+      saveOfflineCache(cacheKey, routes);
     },
     async (error) => {
-      const fallback = await loadOfflineCache<TrackTrailRoute[]>(
-        `${OFFLINE_CACHE_USER_ROUTES_PREFIX}${userId}`
-      );
-      if (fallback?.data?.length) {
-        onChange(fallback.data);
-        onError?.("Sem conexão com o servidor. Exibindo suas rotas salvas em cache offline.");
+      const fallback = await loadOfflineCache<TrackTrailRoute[]>(cacheKey);
+      const downloadedRoutes = (await listOfflineRoutes()).map((item) => item.route);
+      const downloadedFromUser = downloadedRoutes.filter((route) => route.startPoint && route.userId === userId);
+      const combinedFallback = mergeRoutesById(fallback?.data || [], downloadedFromUser);
+
+      if (combinedFallback.length) {
+        onChange(combinedFallback);
+        const errorMessage = normalizeFirebaseErrorMessage(error);
+        if (isPermissionDeniedMessage(errorMessage)) {
+          onError?.(errorMessage);
+        } else {
+          onError?.("Sem conexão. Exibindo suas rotas salvas em cache offline.");
+        }
         return;
       }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar suas rotas."));
@@ -209,6 +285,9 @@ export const saveManualRoute = async (input: SaveManualRouteInput, user: User | 
   if (!user) {
     throw new Error("Você precisa estar logado para salvar uma rota.");
   }
+  if (!auth.currentUser?.uid || auth.currentUser.uid !== user.uid) {
+    throw new Error("Sessão inválida para salvar rota.");
+  }
 
   const routeName = input.title?.trim();
   if (!routeName) {
@@ -236,7 +315,21 @@ export const saveManualRoute = async (input: SaveManualRouteInput, user: User | 
     titulo: routeName,
     tipo: input.type || "Trilha",
     dificuldade: input.difficulty || "Média",
+    tempoEstimado: input.estimatedTime?.trim() || null,
+    duracaoSegundos:
+      typeof input.durationSeconds === "number" && Number.isFinite(input.durationSeconds)
+        ? Math.max(0, Math.round(input.durationSeconds))
+        : null,
+    terreno: input.terrain?.trim() || null,
     descricao: input.description?.trim() || "Rota criada manualmente pelo usuário.",
+    elevacaoGanhoM:
+      typeof input.elevationGainM === "number" && Number.isFinite(input.elevationGainM)
+        ? Number(input.elevationGainM.toFixed(1))
+        : null,
+    elevacaoPerdaM:
+      typeof input.elevationLossM === "number" && Number.isFinite(input.elevationLossM)
+        ? Number(input.elevationLossM.toFixed(1))
+        : null,
     distancia: distanceLabel,
     startPoint,
     endPoint,
@@ -255,4 +348,23 @@ export const saveManualRoute = async (input: SaveManualRouteInput, user: User | 
     id: userRouteRef.key,
     ...payload,
   };
+};
+
+export const deleteUserRoute = async (userId: string, routeId: string) => {
+  if (!userId?.trim()) {
+    throw new Error("Usuário inválido para excluir rota.");
+  }
+  if (!routeId?.trim()) {
+    throw new Error("Rota inválida para exclusão.");
+  }
+  const currentUid = auth.currentUser?.uid || "";
+  if (!currentUid || currentUid !== userId) {
+    throw new Error("Operação não autorizada para este usuário.");
+  }
+
+  try {
+    await remove(ref(database, `users/${userId}/rotas_tracadas/${routeId}`));
+  } catch (error) {
+    throw new Error(normalizeFirebaseErrorMessage(error, "Não foi possível excluir a rota."));
+  }
 };

@@ -3,15 +3,22 @@ import {
   onValue,
   push,
   ref,
+  remove,
   runTransaction,
   set,
-  update,
 } from "firebase/database";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
-import { database, normalizeFirebaseErrorMessage, storage } from "./connectionFirebase";
+import { auth, database, normalizeFirebaseErrorMessage, storage } from "./connectionFirebase";
 import { getUserPrivacyZone, sanitizeRouteForPublicView } from "../src/services/privacyZoneService";
 
 const COMMUNITY_POSTS_PATH = "communityPosts";
+
+const assertAuthenticatedActor = (expectedUserId, operation) => {
+  const currentUid = auth.currentUser?.uid || "";
+  if (!currentUid || !expectedUserId || currentUid !== String(expectedUserId)) {
+    throw new Error(`Operação não autorizada para ${operation}.`);
+  }
+};
 
 const mapPostsSnapshot = (snapshot) => {
   if (!snapshot.exists()) return [];
@@ -123,6 +130,7 @@ export const createCommunityPost = async ({
   photoUris,
   route,
 }) => {
+  assertAuthenticatedActor(authorId, "publicar na comunidade");
   if (!authorId) throw new Error("Usuário inválido para publicação.");
   if (!text?.trim()) throw new Error("Digite um texto para o post.");
 
@@ -160,6 +168,7 @@ export const addCommunityComment = async ({
   authorName,
   text,
 }) => {
+  assertAuthenticatedActor(authorId, "comentar");
   if (!postId) throw new Error("Post inválido.");
   if (!authorId) throw new Error("Usuário inválido.");
   if (!text?.trim()) throw new Error("Digite um comentário.");
@@ -193,6 +202,7 @@ export const toggleCommunityKudo = async ({
   userName,
   userPhotoUrl,
 }) => {
+  assertAuthenticatedActor(userId, "curtir");
   if (!postId) throw new Error("Post inválido.");
   if (!userId) throw new Error("Usuário inválido para kudo.");
 
@@ -323,7 +333,9 @@ export const createActivitySharePost = async ({
   caption,
   activityType,
   photoUris,
+  visibility,
 }) => {
+  assertAuthenticatedActor(userId, "compartilhar atividade");
   if (!userId) throw new Error("Usuário inválido para compartilhar atividade.");
   if (!session?.points?.length || session.points.length < 2) {
     throw new Error("Trajeto insuficiente para compartilhar.");
@@ -346,6 +358,10 @@ export const createActivitySharePost = async ({
       : null;
   const velocidadeMediaKmh =
     durationSec > 0 ? Number(session.distanceKm || 0) / (durationSec / 3600) : 0;
+  const normalizedVisibility =
+    visibility === "public" || visibility === "friends" || visibility === "private"
+      ? visibility
+      : "friends";
 
   try {
     const postRef = push(ref(database, COMMUNITY_POSTS_PATH));
@@ -359,7 +375,7 @@ export const createActivitySharePost = async ({
 
     await set(postRef, {
       postType: "activity_share",
-      visibility: "friends",
+      visibility: normalizedVisibility,
       authorId: userId,
       authorName,
       authorPhotoUrl,
@@ -421,6 +437,66 @@ export const getCommunityPostById = async (postId) => {
   } catch (error) {
     throw new Error(
       normalizeFirebaseErrorMessage(error, "Não foi possível carregar o post agora.")
+    );
+  }
+};
+
+export const deleteCommunityPost = async ({ postId, requesterId }) => {
+  assertAuthenticatedActor(requesterId, "excluir post");
+  if (!postId) throw new Error("Post inválido.");
+  if (!requesterId) throw new Error("Usuário inválido.");
+
+  try {
+    const postRef = ref(database, `${COMMUNITY_POSTS_PATH}/${postId}`);
+    const snapshot = await get(postRef);
+    if (!snapshot.exists()) throw new Error("Post não encontrado.");
+
+    const post = snapshot.val() || {};
+    if (String(post.authorId || "") !== String(requesterId)) {
+      throw new Error("Somente o autor pode excluir este post.");
+    }
+
+    await remove(postRef);
+    return true;
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível excluir o post.")
+    );
+  }
+};
+
+export const deleteCommunityComment = async ({ postId, commentId, requesterId }) => {
+  assertAuthenticatedActor(requesterId, "excluir comentário");
+  if (!postId) throw new Error("Post inválido.");
+  if (!commentId) throw new Error("Comentário inválido.");
+  if (!requesterId) throw new Error("Usuário inválido.");
+
+  try {
+    const postRef = ref(database, `${COMMUNITY_POSTS_PATH}/${postId}`);
+    const postSnapshot = await get(postRef);
+    if (!postSnapshot.exists()) throw new Error("Post não encontrado.");
+    const post = postSnapshot.val() || {};
+
+    const commentRef = ref(database, `${COMMUNITY_POSTS_PATH}/${postId}/comments/${commentId}`);
+    const commentSnapshot = await get(commentRef);
+    if (!commentSnapshot.exists()) throw new Error("Comentário não encontrado.");
+    const comment = commentSnapshot.val() || {};
+
+    const isPostAuthor = String(post.authorId || "") === String(requesterId);
+    const isCommentAuthor = String(comment.authorId || "") === String(requesterId);
+    if (!isPostAuthor && !isCommentAuthor) {
+      throw new Error("Você não tem permissão para excluir este comentário.");
+    }
+
+    await remove(commentRef);
+    await runTransaction(ref(database, `${COMMUNITY_POSTS_PATH}/${postId}/commentsCount`), (current) => {
+      const currentValue = typeof current === "number" ? current : 0;
+      return Math.max(0, currentValue - 1);
+    });
+    return true;
+  } catch (error) {
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Não foi possível excluir o comentário.")
     );
   }
 };

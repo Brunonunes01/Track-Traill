@@ -1,5 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
+import { useIsFocused } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
+import * as Location from "expo-location";
 import { onValue, ref } from "firebase/database";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
@@ -30,6 +32,7 @@ import { colors, layout, radius, shadows, spacing, typography } from "../theme/d
 type WeatherInfo = {
   temperature: number;
   rainChance: number;
+  cityName?: string;
 };
 
 const DEFAULT_WEATHER_POINT = {
@@ -45,6 +48,7 @@ const getGreeting = () => {
 };
 
 export default function SimpleHomeScreen({ navigation }: any) {
+  const isFocused = useIsFocused();
   const insets = useSafeAreaInsets();
   const tabBarHeight = useBottomTabBarHeight();
 
@@ -98,20 +102,47 @@ export default function SimpleHomeScreen({ navigation }: any) {
   }, []);
 
   useEffect(() => {
+    if (!isFocused) return;
+
     let mounted = true;
 
     const loadWeather = async () => {
       try {
         setWeatherLoading(true);
+        let latitude = DEFAULT_WEATHER_POINT.latitude;
+        let longitude = DEFAULT_WEATHER_POINT.longitude;
+
+        try {
+          let permission = await Location.getForegroundPermissionsAsync();
+          if (permission.status !== "granted") {
+            permission = await Location.requestForegroundPermissionsAsync();
+          }
+          if (permission.status === "granted") {
+            const current = await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.Balanced,
+            });
+            if (
+              Number.isFinite(current.coords.latitude) &&
+              Number.isFinite(current.coords.longitude)
+            ) {
+              latitude = current.coords.latitude;
+              longitude = current.coords.longitude;
+            }
+          }
+        } catch {
+          // Fallback para coordenada padrão em caso de falha de GPS/permissão.
+        }
+
         const data = await getWeatherByCoordinates(
-          DEFAULT_WEATHER_POINT.latitude,
-          DEFAULT_WEATHER_POINT.longitude
+          latitude,
+          longitude
         );
 
         if (!mounted) return;
         setWeather({
           temperature: Number(data?.temperature ?? 0),
           rainChance: Number(data?.rainChance ?? 0),
+          cityName: typeof data?.cityName === "string" ? data.cityName : undefined,
         });
       } catch {
         if (mounted) setWeather(null);
@@ -125,7 +156,7 @@ export default function SimpleHomeScreen({ navigation }: any) {
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [isFocused]);
 
   useEffect(() => {
     if (loading) return;
@@ -259,9 +290,16 @@ export default function SimpleHomeScreen({ navigation }: any) {
               {weatherLoading ? (
                 <ActivityIndicator size="small" color={colors.warning} style={styles.infoLoading} />
               ) : (
-                <Text style={styles.infoValue}>
-                  {weather ? `${weather.temperature}°C · ${weather.rainChance}% chuva` : "Indisponível"}
-                </Text>
+                <View>
+                  <Text style={styles.infoValue}>
+                    {weather ? `${weather.temperature}°C · ${weather.rainChance}% chuva` : "Indisponível"}
+                  </Text>
+                  {weather?.cityName ? (
+                    <Text style={styles.infoSubValue} numberOfLines={1}>
+                      {weather.cityName}
+                    </Text>
+                  ) : null}
+                </View>
               )}
             </AppCard>
 
@@ -336,11 +374,11 @@ export default function SimpleHomeScreen({ navigation }: any) {
             <TouchableOpacity
               activeOpacity={0.9}
               style={styles.shortcutCard}
-              onPress={() => navigation.navigate("Atividades")}
+              onPress={() => navigation.navigate("Historico")}
             >
-              <Ionicons name="walk-outline" size={20} color={colors.success} />
-              <Text style={styles.shortcutTitle}>Atividades</Text>
-              <Text style={styles.shortcutText}>{activitiesCount} registradas</Text>
+              <Ionicons name="time-outline" size={20} color={colors.success} />
+              <Text style={styles.shortcutTitle}>Histórico</Text>
+              <Text style={styles.shortcutText}>{activitiesCount} registros</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -464,8 +502,8 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xs,
   },
   heroButton: {
-    backgroundColor: "rgba(10, 15, 25, 0.23)",
-    borderColor: "rgba(255,255,255,0.4)",
+    backgroundColor: colors.primary,
+    borderColor: colors.primaryPressed,
     ...shadows.floating,
   },
   heroButtonText: {
@@ -495,6 +533,11 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
     marginTop: spacing.xxs,
+  },
+  infoSubValue: {
+    color: colors.textMuted,
+    fontSize: 11,
+    marginTop: 2,
   },
   valueDanger: {
     color: colors.danger,

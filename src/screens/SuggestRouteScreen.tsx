@@ -28,6 +28,7 @@ export default function SuggestRouteScreen() {
 
   const navigation = useNavigation<any>();
   const mapRef = useRef<MapView>(null);
+  const dragRecalcTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [startPoint, setStartPoint] = useState<Coordinate | null>(null);
   const [endPoint, setEndPoint] = useState<Coordinate | null>(null);
@@ -39,12 +40,17 @@ export default function SuggestRouteScreen() {
   const [descricao, setDescricao] = useState('');
   const [tipoRota, setTipoRota] = useState('Ciclismo');
   const [dificuldade, setDificuldade] = useState('Média');
+  const [terreno, setTerreno] = useState('Misto');
   const [distanciaCalculada, setDistanciaCalculada] = useState<string | null>(null);
   const [tempoCalculado, setTempoCalculado] = useState<string | null>(null);
+  const [tempoEstimadoManual, setTempoEstimadoManual] = useState('');
   const [duracaoSegundos, setDuracaoSegundos] = useState<number | null>(null);
+  const [isFormVisible, setIsFormVisible] = useState(false);
+  const [visibility, setVisibility] = useState<"public" | "friends" | "private">("friends");
 
   const categorias = ['Ciclismo', 'Corrida', 'Caminhada'];
-  const dificuldades = ['Fácil', 'Média', 'Difícil'];
+  const dificuldades = ['Fácil', 'Média', 'Difícil', 'Extrema'];
+  const terrenos = ['Asfalto', 'Terra', 'Trilha técnica', 'Misto'];
 
   useEffect(() => {
     let mounted = true;
@@ -100,6 +106,14 @@ export default function SuggestRouteScreen() {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (dragRecalcTimeoutRef.current) {
+        clearTimeout(dragRecalcTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const calcularRotaAcompanhandoEstrada = async (start: Coordinate, end: Coordinate) => {
     setIsCalculating(true);
     try {
@@ -141,8 +155,26 @@ export default function SuggestRouteScreen() {
       setEndPoint(coords);
       calcularRotaAcompanhandoEstrada(startPoint, coords);
     } else {
-      Alert.alert("Atenção", "Você já marcou o início e o fim. Limpe os pontos para refazer.");
+      setEndPoint(coords);
+      calcularRotaAcompanhandoEstrada(startPoint, coords);
     }
+  };
+
+  const scheduleDragRouteRecalc = (nextEndPoint: Coordinate, immediate = false) => {
+    if (!startPoint) return;
+    if (dragRecalcTimeoutRef.current) {
+      clearTimeout(dragRecalcTimeoutRef.current);
+      dragRecalcTimeoutRef.current = null;
+    }
+
+    if (immediate) {
+      calcularRotaAcompanhandoEstrada(startPoint, nextEndPoint);
+      return;
+    }
+
+    dragRecalcTimeoutRef.current = setTimeout(() => {
+      calcularRotaAcompanhandoEstrada(startPoint, nextEndPoint);
+    }, 350);
   };
 
   const handleClearPoints = () => {
@@ -152,6 +184,7 @@ export default function SuggestRouteScreen() {
     setDistanciaCalculada(null);
     setTempoCalculado(null);
     setDuracaoSegundos(null);
+    setIsFormVisible(false);
   };
 
   const handleEnviarSugestao = async () => {
@@ -161,24 +194,48 @@ export default function SuggestRouteScreen() {
     if (!user) { Alert.alert('Erro', 'Você precisa estar logado.'); return; }
 
     try {
-      const pendentesRef = ref(database, 'rotas_pendentes');
-      await set(push(pendentesRef), {
+      const payload = {
         nome: nomeRota,
+        titulo: nomeRota,
         tipo: tipoRota,
         dificuldade,
         distancia: distanciaCalculada || '0 km',
-        tempoEstimado: tempoCalculado || null,
+        tempoEstimado: tempoEstimadoManual.trim() || tempoCalculado || null,
         duracaoSegundos: duracaoSegundos || null,
+        terreno,
         descricao: descricao || 'Sem descrição.',
         startPoint,
         endPoint,
         rotaCompleta: routeCoordinates,
         sugeridoPor: user.uid,
         emailAutor: user.email,
-        status: 'pendente',
-        criadoEm: new Date().toISOString()
-      });
-      Alert.alert('Sucesso!', 'A sua rota foi enviada.', [{ text: 'Voltar', onPress: () => navigation.goBack() }]);
+        criadoEm: new Date().toISOString(),
+        visibility,
+      };
+
+      if (visibility === "public") {
+        const pendentesRef = ref(database, 'rotas_pendentes');
+        await set(push(pendentesRef), {
+          ...payload,
+          status: 'pendente',
+        });
+        Alert.alert('Sucesso!', 'A sua rota foi enviada para análise pública.', [{ text: 'Voltar', onPress: () => navigation.goBack() }]);
+      } else {
+        const userRoutesRef = ref(database, `users/${user.uid}/rotas_tracadas`);
+        await set(push(userRoutesRef), {
+          ...payload,
+          userId: user.uid,
+          userEmail: user.email || null,
+          status: visibility === "private" ? "privada" : "friends_only",
+        });
+        Alert.alert(
+          'Sucesso!',
+          visibility === "private"
+            ? 'A sua rota foi salva somente para você.'
+            : 'A sua rota foi salva com visibilidade para amigos.',
+          [{ text: 'Voltar', onPress: () => navigation.goBack() }]
+        );
+      }
     } catch (error: any) {
       Alert.alert('Erro', error.message);
     }
@@ -200,14 +257,41 @@ export default function SuggestRouteScreen() {
                 <Polyline key={`oficial-${rota.id}`} coordinates={rota.rotaCompleta} strokeColor="rgba(37, 99, 235, 0.5)" strokeWidth={5} />
             ))}
             {startPoint && <Marker coordinate={startPoint} title="Início"><Ionicons name="location" size={40} color="#22c55e" /></Marker>}
-            {endPoint && <Marker coordinate={endPoint} title="Fim"><Ionicons name="flag" size={40} color="#ef4444" /></Marker>}
+            {endPoint && (
+              <Marker
+                coordinate={endPoint}
+                title="Fim"
+                draggable
+                onDrag={(event) => {
+                  const coords = toCoordinate(event.nativeEvent.coordinate);
+                  if (!coords) return;
+                  setEndPoint(coords);
+                  scheduleDragRouteRecalc(coords, false);
+                }}
+                onDragEnd={(event) => {
+                  const coords = toCoordinate(event.nativeEvent.coordinate);
+                  if (!coords) return;
+                  setEndPoint(coords);
+                  scheduleDragRouteRecalc(coords, true);
+                }}
+              >
+                <Ionicons name="flag" size={40} color="#ef4444" />
+              </Marker>
+            )}
             {routeCoordinates.length > 0 && <Polyline coordinates={routeCoordinates} strokeColor="#ffd700" strokeWidth={5} />}
         </MapView>
       )}
 
       <View style={styles.topBar}>
         <TouchableOpacity style={styles.iconButton} onPress={() => navigation.goBack()}><Ionicons name="arrow-back" size={28} color="#fff" /></TouchableOpacity>
-        <TouchableOpacity style={styles.iconButton} onPress={handleClearPoints}><Ionicons name="trash-outline" size={28} color="#fff" /></TouchableOpacity>
+        <View style={{ flexDirection: 'row', gap: 10 }}>
+          {startPoint && endPoint ? (
+            <TouchableOpacity style={styles.iconButton} onPress={() => setIsFormVisible((current) => !current)}>
+              <Ionicons name={isFormVisible ? "eye-off-outline" : "eye-outline"} size={24} color="#fff" />
+            </TouchableOpacity>
+          ) : null}
+          <TouchableOpacity style={styles.iconButton} onPress={handleClearPoints}><Ionicons name="trash-outline" size={28} color="#fff" /></TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.instructionBox}>
@@ -219,70 +303,120 @@ export default function SuggestRouteScreen() {
           <Text style={styles.instructionText}>
             {!startPoint
               ? "1. Marque o INÍCIO (cálculo automático de rota real)"
-              : !endPoint
+                : !endPoint
                 ? "2. Marque o FIM para calcular por ruas/trilhas"
-                : "3. Rota real calculada. Revise distância e tempo."}
+                : "3. Toque no mapa ou arraste o FIM para ajustar a rota em tempo real."}
           </Text>
         )}
       </View>
 
-      <View style={styles.bottomSheet}>
-        <ImageBackground source={require('../../assets/images/Azulao.png')} style={styles.sheetBg} imageStyle={{ borderTopLeftRadius: 30, borderTopRightRadius: 30 }}>
-          <LinearGradient colors={['rgba(0,0,0,0.85)', 'rgba(0,0,0,0.98)']} style={styles.sheetOverlay}>
-            <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-                <View style={styles.dragIndicator} />
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                    <Text style={styles.sheetTitle}>Detalhes da Rota</Text>
-                    <View style={{ flexDirection: "row", gap: 8 }}>
-                      {distanciaCalculada ? (
-                        <View style={styles.distBadge}>
-                          <Ionicons name="analytics" size={16} color="#000" />
-                          <Text style={styles.distText}>{distanciaCalculada}</Text>
-                        </View>
-                      ) : null}
-                      {tempoCalculado ? (
-                        <View style={styles.distBadge}>
-                          <Ionicons name="time-outline" size={16} color="#000" />
-                          <Text style={styles.distText}>{tempoCalculado}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                </View>
-                
-                <Text style={styles.label}>Nome da Trilha</Text>
-                <TextInput style={styles.input} placeholder="Ex: Trilha da Pedra Grande" placeholderTextColor="#666" value={nomeRota} onChangeText={setNomeRota} />
+      {startPoint && endPoint && !isFormVisible ? (
+        <View style={styles.confirmBox}>
+          <TouchableOpacity style={styles.confirmBtn} onPress={() => setIsFormVisible(true)}>
+            <Ionicons name="checkmark-circle-outline" size={20} color="#000" />
+            <Text style={styles.confirmBtnText}>Confirmar pontos e abrir cadastro</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
-                <Text style={styles.label}>Desporto Principal</Text>
+      {isFormVisible ? (
+        <View style={styles.bottomSheet}>
+          <ImageBackground source={require('../../assets/images/Azulao.png')} style={styles.sheetBg} imageStyle={{ borderTopLeftRadius: 30, borderTopRightRadius: 30 }}>
+            <LinearGradient colors={['rgba(0,0,0,0.85)', 'rgba(0,0,0,0.98)']} style={styles.sheetOverlay}>
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+                  <View style={styles.dragIndicator} />
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                      <Text style={styles.sheetTitle}>Detalhes da Rota</Text>
+                      <View style={{ flexDirection: "row", gap: 8 }}>
+                        {distanciaCalculada ? (
+                          <View style={styles.distBadge}>
+                            <Ionicons name="analytics" size={16} color="#000" />
+                            <Text style={styles.distText}>{distanciaCalculada}</Text>
+                          </View>
+                        ) : null}
+                        {tempoCalculado ? (
+                          <View style={styles.distBadge}>
+                            <Ionicons name="time-outline" size={16} color="#000" />
+                            <Text style={styles.distText}>{tempoCalculado}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                  </View>
+                  
+                  <Text style={styles.label}>Nome da Trilha</Text>
+                  <TextInput style={styles.input} placeholder="Ex: Trilha da Pedra Grande" placeholderTextColor="#666" value={nomeRota} onChangeText={setNomeRota} />
+
+                  <Text style={styles.label}>Desporto Principal</Text>
+                  <View style={styles.chipsContainer}>
+                      {categorias.map(cat => (
+                          <TouchableOpacity key={cat} style={[styles.chip, tipoRota === cat && styles.chipActive]} onPress={() => setTipoRota(cat)}>
+                              <Text style={[styles.chipText, tipoRota === cat && styles.chipTextActive]}>{cat}</Text>
+                          </TouchableOpacity>
+                      ))}
+                  </View>
+
+                  <Text style={styles.label}>Dificuldade</Text>
+                  <View style={styles.chipsContainer}>
+                      {dificuldades.map(dif => (
+                          <TouchableOpacity key={dif} style={[styles.chip, dificuldade === dif && styles.chipActive]} onPress={() => setDificuldade(dif)}>
+                              <Text style={[styles.chipText, dificuldade === dif && styles.chipTextActive]}>{dif}</Text>
+                          </TouchableOpacity>
+                      ))}
+                  </View>
+
+                  <Text style={styles.label}>Terreno</Text>
+                  <View style={styles.chipsContainer}>
+                      {terrenos.map(item => (
+                          <TouchableOpacity key={item} style={[styles.chip, terreno === item && styles.chipActive]} onPress={() => setTerreno(item)}>
+                              <Text style={[styles.chipText, terreno === item && styles.chipTextActive]}>{item}</Text>
+                          </TouchableOpacity>
+                      ))}
+                  </View>
+
+                  <Text style={styles.label}>Tempo estimado (opcional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    placeholder={tempoCalculado ? `Sugerido: ${tempoCalculado}` : "Ex: 1h 20min"}
+                    placeholderTextColor="#666"
+                  value={tempoEstimadoManual}
+                  onChangeText={setTempoEstimadoManual}
+                />
+
+                <Text style={styles.label}>Visibilidade da rota</Text>
                 <View style={styles.chipsContainer}>
-                    {categorias.map(cat => (
-                        <TouchableOpacity key={cat} style={[styles.chip, tipoRota === cat && styles.chipActive]} onPress={() => setTipoRota(cat)}>
-                            <Text style={[styles.chipText, tipoRota === cat && styles.chipTextActive]}>{cat}</Text>
-                        </TouchableOpacity>
-                    ))}
+                  {[
+                    { value: "public", label: "App inteiro" },
+                    { value: "friends", label: "Somente amigos" },
+                    { value: "private", label: "Só para mim" },
+                  ].map((item) => (
+                    <TouchableOpacity
+                      key={item.value}
+                      style={[styles.chip, visibility === item.value ? styles.chipActive : null]}
+                      onPress={() => setVisibility(item.value as "public" | "friends" | "private")}
+                    >
+                      <Text style={[styles.chipText, visibility === item.value ? styles.chipTextActive : null]}>
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
                 </View>
 
-                <Text style={styles.label}>Dificuldade</Text>
-                <View style={styles.chipsContainer}>
-                    {dificuldades.map(dif => (
-                        <TouchableOpacity key={dif} style={[styles.chip, dificuldade === dif && styles.chipActive]} onPress={() => setDificuldade(dif)}>
-                            <Text style={[styles.chipText, dificuldade === dif && styles.chipTextActive]}>{dif}</Text>
-                        </TouchableOpacity>
-                    ))}
-                </View>
+                  <Text style={styles.label}>Dicas</Text>
+                  <TextInput style={[styles.input, { height: 80, textAlignVertical: 'top' }]} placeholder="Tem muita subida?" placeholderTextColor="#666" multiline value={descricao} onChangeText={setDescricao} />
 
-                <Text style={styles.label}>Dicas</Text>
-                <TextInput style={[styles.input, { height: 80, textAlignVertical: 'top' }]} placeholder="Tem muita subida?" placeholderTextColor="#666" multiline value={descricao} onChangeText={setDescricao} />
-
-                <TouchableOpacity style={[styles.submitBtn, (!startPoint || !endPoint || isCalculating) && styles.submitBtnDisabled]} onPress={handleEnviarSugestao} disabled={isCalculating}>
-                  <Text style={styles.submitBtnText}>ENVIAR PARA ANÁLISE</Text>
-                  <Ionicons name="paper-plane-outline" size={20} color="#000" style={{ marginLeft: 8 }} />
-                </TouchableOpacity>
-              </ScrollView>
-            </KeyboardAvoidingView>
-          </LinearGradient>
-        </ImageBackground>
-      </View>
+                  <TouchableOpacity style={[styles.submitBtn, (!startPoint || !endPoint || isCalculating) && styles.submitBtnDisabled]} onPress={handleEnviarSugestao} disabled={isCalculating}>
+                    <Text style={styles.submitBtnText}>
+                      {visibility === "public" ? "ENVIAR PARA ANÁLISE" : "SALVAR ROTA"}
+                    </Text>
+                    <Ionicons name="paper-plane-outline" size={20} color="#000" style={{ marginLeft: 8 }} />
+                  </TouchableOpacity>
+                </ScrollView>
+              </KeyboardAvoidingView>
+            </LinearGradient>
+          </ImageBackground>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -294,6 +428,19 @@ const styles = StyleSheet.create({
   iconButton: { backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 50, borderWidth: 1, borderColor: '#333' },
   instructionBox: { position: 'absolute', top: 110, alignSelf: 'center', backgroundColor: '#ffd700', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20, elevation: 5 },
   instructionText: { color: '#000', fontWeight: 'bold', fontSize: 14 },
+  confirmBox: { position: 'absolute', bottom: 24, left: 16, right: 16 },
+  confirmBtn: {
+    backgroundColor: '#ffd700',
+    borderRadius: 16,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    elevation: 8,
+  },
+  confirmBtnText: { color: '#000', fontWeight: 'bold', fontSize: 15 },
   bottomSheet: { position: 'absolute', bottom: 0, width: '100%', height: '55%', borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 20 },
   sheetBg: { flex: 1 },
   sheetOverlay: { flex: 1, borderTopLeftRadius: 30, borderTopRightRadius: 30 },

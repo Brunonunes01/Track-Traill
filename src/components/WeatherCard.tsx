@@ -12,6 +12,7 @@ type WeatherData = {
   rainChance: number;
   windSpeed: number;
   weatherCode: number;
+  cityName?: string;
 };
 
 const getWeatherEmoji = (weatherCode?: number) => {
@@ -74,6 +75,7 @@ export default function WeatherCard({ latitude, longitude }: WeatherCardProps) {
 
       {!loading && !error && weather && (
         <>
+          <Text style={styles.cityText}>Clima em {weather.cityName || "Local atual"}</Text>
           <Text style={styles.tempText}>
             {getWeatherEmoji(weather.weatherCode)} {weather.temperature}°C
           </Text>
@@ -120,6 +122,12 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: "700",
     marginBottom: 10,
+  },
+  cityText: {
+    color: "#9ca3af",
+    fontSize: 13,
+    marginBottom: 4,
+    fontWeight: "600",
   },
   metaRow: {
     flexDirection: "row",

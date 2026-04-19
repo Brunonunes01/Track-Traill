@@ -7,6 +7,7 @@ import {
   push,
   query,
   ref,
+  remove,
   runTransaction,
   set,
   update,
@@ -41,10 +42,14 @@ type SubscribeAlertOptions = {
 };
 
 const ALERT_TTL_MS = 6 * 60 * 60 * 1000;
-const AUTO_REMOVE_REPORT_THRESHOLD = 5;
+const AUTO_REVIEW_REPORT_THRESHOLD = 5;
 const alertsRef = ref(database, "alerts");
 const attemptedExpireSync = new Set<string>();
 const OFFLINE_CACHE_ALERTS_KEY = "alerts";
+const isPermissionDeniedMessage = (message?: string | null) => {
+  const normalized = String(message || "").toLowerCase();
+  return normalized.includes("permission_denied") || normalized.includes("permissão");
+};
 const ALERT_SEVERITY_WEIGHT: Record<AlertType, number> = {
   acidente: 1,
   assalto_risco: 1,
@@ -210,6 +215,14 @@ const normalizeAlert = (
       resolvedAt: typeof raw?.resolvedAt === "string" ? raw.resolvedAt : null,
       removedAt: typeof raw?.removedAt === "string" ? raw.removedAt : null,
       removedBy: typeof raw?.removedBy === "string" ? raw.removedBy : null,
+      moderationStatus:
+        raw?.moderationStatus === "review_pending" || raw?.moderationStatus === "reviewed"
+          ? raw.moderationStatus
+          : "none",
+      reviewRequestedAt:
+        typeof raw?.reviewRequestedAt === "string" ? raw.reviewRequestedAt : null,
+      reviewRequestedBy:
+        typeof raw?.reviewRequestedBy === "string" ? raw.reviewRequestedBy : null,
     },
   };
 };
@@ -304,8 +317,18 @@ export const subscribeAlerts = (
   onChange: (alerts: TrailAlert[]) => void,
   onError?: (message: string) => void,
   options?: SubscribeAlertOptions
-) =>
-  onValue(
+) => {
+  // Carrega cache local imediatamente
+  loadOfflineCache<TrailAlert[]>(OFFLINE_CACHE_ALERTS_KEY).then((cache) => {
+    if (cache?.data?.length) {
+      const cachedAlerts = cache.data
+        .filter((item) => shouldIncludeAlert(item, options))
+        .sort((a, b) => b.createdAtMs - a.createdAtMs);
+      onChange(cachedAlerts);
+    }
+  }).catch(() => {});
+
+  return onValue(
     alertsRef,
     (snapshot) => {
       if (!snapshot.exists()) {
@@ -345,12 +368,22 @@ export const subscribeAlerts = (
           .filter((item) => shouldIncludeAlert(item, options))
           .sort((a, b) => b.createdAtMs - a.createdAtMs);
         onChange(cachedAlerts);
-        onError?.("Sem conexão com o servidor. Exibindo alertas em cache offline.");
+        
+        // Só reporta erro se for algo crítico (permissão)
+        const errorMessage = normalizeFirebaseErrorMessage(error);
+        if (isPermissionDeniedMessage(errorMessage)) {
+          onError?.(errorMessage);
+        } else {
+          // Mensagem padronizada para silenciar na UI
+          onError?.("Sem conexão. Exibindo alertas em cache offline.");
+          console.log("[alerts] Falling back to offline cache due to connection issue.");
+        }
         return;
       }
       onError?.(normalizeFirebaseErrorMessage(error, "Falha ao carregar alertas."));
     }
   );
+};
 
 export const subscribeRouteAlerts = (
   routeId: string,
@@ -427,6 +460,9 @@ export const createAlert = async (input: CreateAlertInput, user: User | null) =>
       resolvedAt: safeStatus === "resolvido" ? createdAt : null,
       removedAt: null,
       removedBy: null,
+      moderationStatus: "none",
+      reviewRequestedAt: null,
+      reviewRequestedBy: null,
     };
 
     const newAlertRef = push(alertsRef);
@@ -509,11 +545,11 @@ export const reportAlert = async (
 
     const nextReportCount = Number(reportResult.snapshot.val() || 0);
 
-    if (nextReportCount >= AUTO_REMOVE_REPORT_THRESHOLD && derived.status === "ativo") {
+    if (nextReportCount >= AUTO_REVIEW_REPORT_THRESHOLD && derived.status === "ativo") {
       await update(alertRef, {
-        status: "removido",
-        removedAt: new Date().toISOString(),
-        removedBy: "auto_reports_threshold",
+        moderationStatus: "review_pending",
+        reviewRequestedAt: new Date().toISOString(),
+        reviewRequestedBy: "auto_reports_threshold",
       });
     }
   } catch (error: any) {
@@ -539,13 +575,11 @@ export const markAlertAsResolved = async (alertId: string) => {
 
 export const removeAlertByAdmin = async (alertId: string, adminUserId?: string | null) => {
   const alertRef = ref(database, `alerts/${alertId}`);
+  void adminUserId;
 
   try {
-    await update(alertRef, {
-      status: "removido",
-      removedAt: new Date().toISOString(),
-      removedBy: adminUserId || "admin",
-    });
+    // Exclui o alerta de forma definitiva para não voltar na moderação.
+    await remove(alertRef);
   } catch (error) {
     throw new Error(
       normalizeFirebaseErrorMessage(error, "Não foi possível remover o alerta.")

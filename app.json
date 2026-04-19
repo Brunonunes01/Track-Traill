@@ -35,7 +35,7 @@
       ],
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyAfY8TSIlNySkNoaaMbgaGkLgPDObNPaaQ"
+          "apiKey": "SET_VIA_EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY"
         }
       },
       "package": "com.bruno.tracktrail"
@@ -62,12 +62,23 @@
           "locationAlwaysAndWhenInUsePermission": "Permitir que o Track & Trail acesse sua localização para mapear trilhas.",
           "isAndroidForegroundServiceEnabled": true
         }
-      ]
+      ],
+      "expo-sqlite"
     ],
     "newArchEnabled": true,
     "typedRoutes": true,
     "extra": {
-      "googleDirectionsApiKey": "AIzaSyAfY8TSIlNySkNoaaMbgaGkLgPDObNPaaQ",
+      "googleDirectionsApiKey": "SET_VIA_EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY",
+      "firebaseFunctionsRegion": "us-central1",
+      "firebase": {
+        "apiKey": "SET_VIA_EXPO_PUBLIC_FIREBASE_API_KEY",
+        "authDomain": "SET_VIA_EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN",
+        "databaseURL": "SET_VIA_EXPO_PUBLIC_FIREBASE_DATABASE_URL",
+        "projectId": "SET_VIA_EXPO_PUBLIC_FIREBASE_PROJECT_ID",
+        "storageBucket": "SET_VIA_EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET",
+        "messagingSenderId": "SET_VIA_EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID",
+        "appId": "SET_VIA_EXPO_PUBLIC_FIREBASE_APP_ID"
+      },
       "router": {},
       "eas": {
         "projectId": "b15aa9ff-e995-4b01-8c4d-b9be8953e564"

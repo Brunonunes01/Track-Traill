@@ -29,7 +29,7 @@ const getDirectionsApiKey = () => {
   const envApiKey = process.env.EXPO_PUBLIC_GOOGLE_DIRECTIONS_API_KEY;
 
   const key = envApiKey || String(extraApiKey || "") || String(androidMapsKey || "");
-  if (!key) {
+  if (!key || key.startsWith("SET_VIA_")) {
     throw new Error("Google Directions API key não configurada.");
   }
 

@@ -1,4 +1,5 @@
 import { onAuthStateChanged } from "firebase/auth";
+import Constants from "expo-constants";
 import {
   equalTo,
   get,
@@ -6,20 +7,17 @@ import {
   orderByChild,
   query,
   ref,
-  update,
 } from "firebase/database";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { auth, database } from "./connectionFirebase";
 
 const USERS_PATH = "users";
-const LEGACY_ADMIN_EMAILS = ["brunonunes01@gmail.com"];
 
 const normalizeEmail = (email) => (email || "").trim().toLowerCase();
 
-// Mantém compatibilidade com contas antigas sem role explícita.
 export const resolveUserRole = (userRecord, email) => {
-  const normalized = normalizeEmail(email || userRecord?.email);
   if (userRecord?.role === "admin") return "admin";
-  if (LEGACY_ADMIN_EMAILS.includes(normalized)) return "admin";
+  void normalizeEmail(email || userRecord?.email);
   return "user";
 };
 
@@ -31,12 +29,31 @@ export const ensureUserRole = async (uid, email) => {
 
   const userData = snapshot.val();
   const resolvedRole = resolveUserRole(userData, email);
+  return resolvedRole;
+};
 
-  if (!userData.role || userData.role !== resolvedRole) {
-    await update(userRef, { role: resolvedRole });
+const getFunctionsRegion = () => {
+  const envRegion = process.env.EXPO_PUBLIC_FIREBASE_FUNCTIONS_REGION;
+  if (envRegion?.trim()) return envRegion.trim();
+  const extraRegion = (Constants.expoConfig?.extra || {}).firebaseFunctionsRegion;
+  if (typeof extraRegion === "string" && extraRegion.trim()) return extraRegion.trim();
+  return "us-central1";
+};
+
+const callAdminFunction = async (name, payload) => {
+  if (!auth.currentUser?.uid) {
+    throw new Error("Você precisa estar autenticado para esta operação.");
   }
 
-  return resolvedRole;
+  try {
+    const functions = getFunctions(undefined, getFunctionsRegion());
+    const callable = httpsCallable(functions, name);
+    const result = await callable(payload);
+    return result?.data || null;
+  } catch (error) {
+    const message = String(error?.message || "").trim();
+    throw new Error(message || "Falha ao executar ação administrativa.");
+  }
 };
 
 export const addAdminByEmail = async (email) => {
@@ -45,28 +62,17 @@ export const addAdminByEmail = async (email) => {
     throw new Error("Informe um e-mail válido.");
   }
 
-  const usersRef = ref(database, USERS_PATH);
-  const userByEmailQuery = query(
-    usersRef,
-    orderByChild("email"),
-    equalTo(normalizedEmail)
-  );
-  const snapshot = await get(userByEmailQuery);
-
-  if (!snapshot.exists()) {
-    throw new Error("Usuário não encontrado para este e-mail.");
-  }
-
-  const users = snapshot.val();
-  const uid = Object.keys(users)[0];
-  await update(ref(database, `${USERS_PATH}/${uid}`), { role: "admin" });
-
-  return { uid, ...users[uid], role: "admin" };
+  const response = await callAdminFunction("setUserAdminClaim", { email: normalizedEmail });
+  return response;
 };
 
 export const removeAdminRole = async (uid) => {
-  if (!uid) throw new Error("Usuário inválido.");
-  await update(ref(database, `${USERS_PATH}/${uid}`), { role: "user" });
+  if (!uid?.trim()) {
+    throw new Error("Usuário inválido.");
+  }
+
+  const response = await callAdminFunction("clearUserAdminClaim", { uid: uid.trim() });
+  return response;
 };
 
 const mapSnapshotToUsers = (snapshot) => {
@@ -105,12 +111,6 @@ export const subscribeCurrentUserRole = (onChange) => {
     if (!user) {
       onChange({ isAdmin: false, role: "user", user: null });
       return;
-    }
-
-    try {
-      await ensureUserRole(user.uid, user.email || "");
-    } catch (error) {
-      console.warn("[admin] ensureUserRole failed:", error?.message || String(error));
     }
 
     const userRef = ref(database, `${USERS_PATH}/${user.uid}`);

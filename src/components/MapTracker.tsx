@@ -1,19 +1,17 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Dimensions, Pressable, StyleSheet, Text, View, ActivityIndicator } from "react-native";
-import { PanGestureHandler } from "react-native-gesture-handler";
+import React, { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Dimensions, Pressable, StyleSheet, Text, View, ActivityIndicator } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from "react-native-maps";
 import Animated, {
-  useAnimatedGestureHandler,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
   withTiming,
 } from "react-native-reanimated";
-import { useBottomTabBarHeight } from "@react-navigation/bottom-tabs";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
+import { FALLBACK_REGION, getRegionWithFallback, toCoordinate } from "../utils/geo";
 import { formatPace, calculatePace } from "../utils/activityMetrics";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
@@ -76,7 +74,7 @@ const TrackerMapView = memo(function TrackerMapView({
   const initialRegion = useMemo(() => getRegionWithFallback(currentLocation, FALLBACK_REGION, {
     latitudeDelta: 0.005,
     longitudeDelta: 0.005,
-  }), []); 
+  }), [currentLocation]);
 
   if (!currentLocation) {
     return (
@@ -109,12 +107,7 @@ const TrackerMapView = memo(function TrackerMapView({
 
 export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
   const insets = useSafeAreaInsets();
-  let tabBarHeight = 0;
-  try {
-    tabBarHeight = useBottomTabBarHeight();
-  } catch (e) {
-    // Tab bar not present
-  }
+  const tabBarHeight = 0;
 
   const [routeCoordinates, setRouteCoordinates] = useState<Coordinate[]>([]);
   const [currentLocation, setCurrentLocation] = useState<Coordinate | null>(null);
@@ -128,24 +121,30 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
   const totalPausedTimeRef = useRef<number>(0);
 
   const panelY = useSharedValue(0);
+  const gestureStartY = useSharedValue(0);
 
-  const gestureHandler = useAnimatedGestureHandler({
-  onStart: (_, ctx: any) => {
-    ctx.startY = panelY.value;
-  },
-  onActive: (event, ctx) => {
-    panelY.value = ctx.startY + event.translationY;
-  },
-  onEnd: (event) => {
-    if (event.velocityY < -500 || event.translationY < -100) {
-      panelY.value = withSpring(-MAX_PANEL_HEIGHT + MIN_PANEL_HEIGHT + 40);
-    } else if (event.velocityY > 500 || event.translationY > 100) {
-      panelY.value = withSpring(0);
-    } else {
-      panelY.value = withSpring(panelY.value < -200 ? -MAX_PANEL_HEIGHT + MIN_PANEL_HEIGHT + 40 : 0);
-    }
-  },
-  });
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onBegin(() => {
+          gestureStartY.value = panelY.value;
+        })
+        .onUpdate((event) => {
+          panelY.value = gestureStartY.value + event.translationY;
+        })
+        .onEnd((event) => {
+          if (event.velocityY < -500 || event.translationY < -100) {
+            panelY.value = withSpring(-MAX_PANEL_HEIGHT + MIN_PANEL_HEIGHT + 40);
+          } else if (event.velocityY > 500 || event.translationY > 100) {
+            panelY.value = withSpring(0);
+          } else {
+            panelY.value = withSpring(
+              panelY.value < -200 ? -MAX_PANEL_HEIGHT + MIN_PANEL_HEIGHT + 40 : 0
+            );
+          }
+        }),
+    [gestureStartY, panelY]
+  );
 
   const animatedPanelStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: panelY.value }],
@@ -238,7 +237,7 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
 
       <Animated.View style={[StyleSheet.absoluteFill, styles.darkOverlay, animatedOverlayStyle]} pointerEvents="none" />
 
-      <PanGestureHandler onGestureEvent={gestureHandler}>
+      <GestureDetector gesture={panGesture}>
         <Animated.View style={[styles.panel, animatedPanelStyle, { paddingBottom: insets.bottom + tabBarHeight + 40 }]}>
           <View style={styles.dragHandle} />
           
@@ -277,7 +276,7 @@ export default function MapTracker({ onFinish, onCancel }: MapTrackerProps) {
             </Pressable>
           </View>
         </Animated.View>
-      </PanGestureHandler>
+      </GestureDetector>
     </View>
   );
 }

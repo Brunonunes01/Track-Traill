@@ -20,7 +20,7 @@ const formatDate = (isoDate: string) => {
 };
 
 export default function AlertCard({ alert, compact, onPress }: AlertCardProps) {
-  const meta = ALERT_TYPE_META[alert.type];
+  const meta = ALERT_TYPE_META[alert.type] || ALERT_TYPE_META.outro;
   const statusColor =
     alert.status === "ativo"
       ? "#ef4444"
@@ -104,6 +104,7 @@ const styles = StyleSheet.create({
   typeRow: {
     flexDirection: "row",
     alignItems: "center",
+    gap: 6,
     flexShrink: 1,
   },
   iconDot: {

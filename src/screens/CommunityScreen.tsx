@@ -1,5 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
+import { LinearGradient } from "expo-linear-gradient";
 import { Image } from "expo-image";
 import { onAuthStateChanged } from "firebase/auth";
 import React, { useEffect, useMemo, useState } from "react";
@@ -7,7 +8,6 @@ import {
   Alert,
   ActivityIndicator,
   FlatList,
-  ImageBackground,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,9 +15,12 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth } from "../../services/connectionFirebase";
 import {
   addCommunityComment,
+  deleteCommunityComment,
+  deleteCommunityPost,
   subscribeCommunityPosts,
   toggleCommunityKudo,
 } from "../../services/communityService";
@@ -25,6 +28,8 @@ import {
   subscribeFriendships,
   subscribeUsers,
 } from "../../services/friendsService";
+import { AppCard, EmptyState, LoadingState, SectionTitle } from "../components/ui";
+import { colors, layout, spacing } from "../theme/designSystem";
 
 type AppUser = {
   uid: string;
@@ -132,6 +137,7 @@ const getPhotoUrl = (post: SharedActivityPost, usersById: Record<string, AppUser
 export default function CommunityScreen(props: CommunityScreenProps) {
   const hookNavigation = useNavigation<any>();
   const navigation = props.navigation || hookNavigation;
+  const insets = useSafeAreaInsets();
 
   const [uid, setUid] = useState("");
   const [loading, setLoading] = useState(true);
@@ -142,6 +148,8 @@ export default function CommunityScreen(props: CommunityScreenProps) {
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [commentingPostId, setCommentingPostId] = useState<string | null>(null);
   const [likingPostId, setLikingPostId] = useState<string | null>(null);
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
   const [openCommentsPostId, setOpenCommentsPostId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -217,7 +225,13 @@ export default function CommunityScreen(props: CommunityScreenProps) {
 
     return posts
       .filter((post) => post.postType === "activity_share")
-      .filter((post) => post.authorId === uid || friendIds.has(post.authorId));
+      .filter((post) => {
+        const visibility = post.visibility || "friends";
+        if (post.authorId === uid) return true;
+        if (visibility === "public") return true;
+        if (visibility === "friends") return friendIds.has(post.authorId);
+        return false;
+      });
   }, [friendIds, posts, uid]);
 
   const handleAddComment = async (post: SharedActivityPost) => {
@@ -264,6 +278,56 @@ export default function CommunityScreen(props: CommunityScreenProps) {
     navigation.navigate("RouteDetail", { routeData });
   };
 
+  const handleDeletePost = (post: SharedActivityPost) => {
+    if (!uid || post.authorId !== uid) return;
+    Alert.alert("Excluir post", "Essa ação remove o post e todos os comentários. Deseja continuar?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Excluir",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            setDeletingPostId(post.id);
+            await deleteCommunityPost({ postId: post.id, requesterId: uid });
+          } catch (error: any) {
+            Alert.alert("Erro", error?.message || "Não foi possível excluir o post.");
+          } finally {
+            setDeletingPostId(null);
+          }
+        },
+      },
+    ]);
+  };
+
+  const handleDeleteComment = (post: SharedActivityPost, comment: CommunityComment) => {
+    if (!uid) return;
+    const canDelete = post.authorId === uid || comment.authorId === uid;
+    if (!canDelete) return;
+
+    Alert.alert("Excluir comentário", "Deseja remover este comentário?", [
+      { text: "Cancelar", style: "cancel" },
+      {
+        text: "Excluir",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const deletingId = `${post.id}:${comment.id}`;
+            setDeletingCommentId(deletingId);
+            await deleteCommunityComment({
+              postId: post.id,
+              commentId: comment.id,
+              requesterId: uid,
+            });
+          } catch (error: any) {
+            Alert.alert("Erro", error?.message || "Não foi possível excluir o comentário.");
+          } finally {
+            setDeletingCommentId(null);
+          }
+        },
+      },
+    ]);
+  };
+
   const renderPost = ({ item }: { item: SharedActivityPost }) => {
     const authorName = getDisplayName(item, usersById);
     const authorPhoto = getPhotoUrl(item, usersById);
@@ -272,6 +336,7 @@ export default function CommunityScreen(props: CommunityScreenProps) {
     const isCommentsOpen = openCommentsPostId === item.id;
     const hasRoute = (item.routeSnapshot?.points || []).length > 1;
     const hasKudo = Boolean(uid && item.kudos && item.kudos[uid]);
+    const canDeletePost = uid && item.authorId === uid;
     const kudosCount =
       typeof item.kudosCount === "number" ? item.kudosCount : Object.keys(item.kudos || {}).length;
 
@@ -294,6 +359,20 @@ export default function CommunityScreen(props: CommunityScreenProps) {
           <View style={styles.typeBadge}>
             <Text style={styles.typeBadgeText}>{item.activityType || "atividade"}</Text>
           </View>
+
+          {canDeletePost ? (
+            <TouchableOpacity
+              style={styles.headerDeleteBtn}
+              onPress={() => handleDeletePost(item)}
+              disabled={deletingPostId === item.id}
+            >
+              {deletingPostId === item.id ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="trash-outline" size={14} color="#fff" />
+              )}
+            </TouchableOpacity>
+          ) : null}
         </View>
 
         <View style={styles.metricsRow}>
@@ -429,7 +508,22 @@ export default function CommunityScreen(props: CommunityScreenProps) {
             ) : (
               comments.map((comment) => (
                 <View key={comment.id} style={styles.commentCard}>
-                  <Text style={styles.commentAuthor}>{comment.authorName}</Text>
+                  <View style={styles.commentHeaderRow}>
+                    <Text style={styles.commentAuthor}>{comment.authorName}</Text>
+                    {uid && (item.authorId === uid || comment.authorId === uid) ? (
+                      <TouchableOpacity
+                        style={styles.commentDeleteBtn}
+                        onPress={() => handleDeleteComment(item, comment)}
+                        disabled={deletingCommentId === `${item.id}:${comment.id}`}
+                      >
+                        {deletingCommentId === `${item.id}:${comment.id}` ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <Ionicons name="trash-outline" size={12} color="#fff" />
+                        )}
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
                   <Text style={styles.commentText}>{comment.text}</Text>
                   <Text style={styles.commentDate}>{formatDate(comment.createdAt)}</Text>
                 </View>
@@ -468,22 +562,33 @@ export default function CommunityScreen(props: CommunityScreenProps) {
   };
 
   return (
-    <ImageBackground source={require("../../assets/images/Azulao.png")} style={styles.background}>
-      <View style={styles.overlay}>
-        <View style={styles.headerCard}>
-          <Text style={styles.headerTitle}>Feed dos amigos</Text>
-          <Text style={styles.headerSubtitle}>Atividades e rotas compartilhadas por quem você acompanha</Text>
-        </View>
+    <View style={styles.screen}>
+      <LinearGradient
+        colors={["#08101D", "#0B1220", "#121F36"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+      <View style={[styles.overlay, { paddingTop: insets.top + spacing.sm }]}>
+        <AppCard style={styles.headerCard}>
+          <SectionTitle
+            title="Feed dos Amigos"
+            subtitle="Atividades e rotas compartilhadas por quem você acompanha"
+          />
+        </AppCard>
 
         {loading ? (
           <View style={styles.loadingWrap}>
-            <ActivityIndicator size="large" color="#1e4db7" />
+            <LoadingState label="Carregando compartilhamentos..." />
           </View>
         ) : (
           <FlatList
             data={visiblePosts}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={styles.listContent}
+            contentContainerStyle={[
+              styles.listContent,
+              { paddingBottom: Math.max(insets.bottom + 24, 32) },
+            ]}
             renderItem={renderPost}
             initialNumToRender={5}
             maxToRenderPerBatch={5}
@@ -491,59 +596,46 @@ export default function CommunityScreen(props: CommunityScreenProps) {
             removeClippedSubviews
             ListEmptyComponent={
               <View style={styles.emptyBlock}>
-                <Text style={styles.emptyTitle}>Sem compartilhamentos por enquanto</Text>
-                <Text style={styles.emptyText}>
-                  Finalize uma atividade e compartilhe para iniciar a comunidade entre amigos.
-                </Text>
+                <EmptyState
+                  title="Sem compartilhamentos por enquanto"
+                  description="Finalize uma atividade e compartilhe para iniciar a comunidade entre amigos."
+                  icon="people-outline"
+                />
               </View>
             }
           />
         )}
       </View>
-    </ImageBackground>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  background: { flex: 1 },
+  screen: {
+    flex: 1,
+    backgroundColor: colors.background,
+  },
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(2,6,23,0.86)",
-    padding: 12,
+    backgroundColor: "transparent",
+    paddingHorizontal: layout.screenPaddingHorizontal,
   },
   headerCard: {
-    backgroundColor: "#111827",
-    borderWidth: 1,
-    borderColor: "#1f2937",
-    borderRadius: 14,
-    padding: 12,
     marginBottom: 10,
-  },
-  headerTitle: {
-    color: "#fff",
-    fontSize: 18,
-    fontWeight: "800",
-  },
-  headerSubtitle: {
-    marginTop: 4,
-    color: "#9ca3af",
-    fontSize: 13,
   },
   loadingWrap: {
     flex: 1,
-    alignItems: "center",
     justifyContent: "center",
   },
   listContent: {
-    paddingBottom: 26,
     gap: 10,
   },
   postCard: {
-    backgroundColor: "#0f172a",
-    borderRadius: 14,
+    backgroundColor: colors.surface,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#1f2937",
-    padding: 12,
+    borderColor: colors.border,
+    padding: 14,
   },
   postHeader: {
     flexDirection: "row",
@@ -556,7 +648,7 @@ const styles = StyleSheet.create({
     height: 40,
     borderRadius: 20,
     overflow: "hidden",
-    backgroundColor: "#1e293b",
+    backgroundColor: colors.surfaceAlt,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -565,17 +657,17 @@ const styles = StyleSheet.create({
     height: "100%",
   },
   avatarText: {
-    color: "#f8fafc",
+    color: colors.textPrimary,
     fontWeight: "800",
     fontSize: 16,
   },
   authorName: {
-    color: "#fff",
+    color: colors.textPrimary,
     fontSize: 15,
     fontWeight: "700",
   },
   dateText: {
-    color: "#9ca3af",
+    color: colors.textMuted,
     fontSize: 11,
     marginTop: 2,
   },
@@ -593,30 +685,38 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textTransform: "capitalize",
   },
+  headerDeleteBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(239,68,68,0.9)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   metricsRow: {
     flexDirection: "row",
     gap: 8,
   },
   metricItem: {
     flex: 1,
-    backgroundColor: "#111827",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: colors.border,
     padding: 8,
   },
   metricLabel: {
-    color: "#9ca3af",
+    color: colors.textMuted,
     fontSize: 10,
     marginBottom: 4,
   },
   metricValue: {
-    color: "#f8fafc",
+    color: colors.textPrimary,
     fontWeight: "700",
     fontSize: 12,
   },
   captionText: {
-    color: "#e5e7eb",
+    color: colors.textSecondary,
     marginTop: 10,
     lineHeight: 20,
   },
@@ -642,12 +742,12 @@ const styles = StyleSheet.create({
     height: 108,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: colors.border,
     marginRight: 8,
     backgroundColor: "#020617",
   },
   routeNameText: {
-    color: "#93c5fd",
+    color: colors.info,
     marginTop: 8,
     fontWeight: "700",
     fontSize: 12,
@@ -657,10 +757,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   kudoBtn: {
-    backgroundColor: "#111827",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: colors.border,
     minHeight: 38,
     alignItems: "center",
     justifyContent: "center",
@@ -680,7 +780,7 @@ const styles = StyleSheet.create({
     color: "#111827",
   },
   actionBtn: {
-    backgroundColor: "#facc15",
+    backgroundColor: colors.warning,
     borderRadius: 10,
     paddingVertical: 9,
     alignItems: "center",
@@ -689,7 +789,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   actionBtnDisabled: {
-    opacity: 0.45,
+    opacity: 0.5,
   },
   actionBtnText: {
     color: "#111827",
@@ -697,10 +797,10 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   commentsToggleBtn: {
-    backgroundColor: "#1f2937",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#374151",
+    borderColor: colors.border,
     paddingVertical: 9,
     alignItems: "center",
     justifyContent: "center",
@@ -708,15 +808,15 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   commentsToggleText: {
-    color: "#d1d5db",
+    color: colors.textSecondary,
     fontWeight: "700",
     fontSize: 12,
   },
   detailBtn: {
-    backgroundColor: "#1f2937",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#374151",
+    borderColor: colors.border,
     paddingVertical: 9,
     alignItems: "center",
     justifyContent: "center",
@@ -726,29 +826,48 @@ const styles = StyleSheet.create({
   commentsBlock: {
     marginTop: 10,
     borderTopWidth: 1,
-    borderTopColor: "#1f2937",
+    borderTopColor: colors.border,
     paddingTop: 10,
     gap: 8,
   },
+  emptyText: {
+    color: colors.textMuted,
+    fontSize: 12,
+  },
   commentCard: {
-    backgroundColor: "#111827",
+    backgroundColor: colors.surfaceAlt,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: "#1f2937",
+    borderColor: colors.border,
     padding: 8,
   },
+  commentHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
   commentAuthor: {
-    color: "#fff",
+    color: colors.textPrimary,
     fontWeight: "700",
     fontSize: 12,
   },
+  commentDeleteBtn: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "rgba(239,68,68,0.82)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 5,
+  },
   commentText: {
-    color: "#d1d5db",
+    color: colors.textSecondary,
     marginTop: 3,
     fontSize: 13,
   },
   commentDate: {
-    color: "#6b7280",
+    color: colors.textMuted,
     marginTop: 4,
     fontSize: 10,
   },
@@ -758,40 +877,22 @@ const styles = StyleSheet.create({
   },
   commentInput: {
     flex: 1,
-    backgroundColor: "#111827",
+    backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: "#374151",
+    borderColor: colors.border,
     borderRadius: 10,
-    color: "#fff",
+    color: colors.textPrimary,
     paddingHorizontal: 10,
     paddingVertical: 9,
   },
   commentSendBtn: {
     width: 40,
     borderRadius: 10,
-    backgroundColor: "#1e4db7",
+    backgroundColor: colors.primary,
     alignItems: "center",
     justifyContent: "center",
   },
   emptyBlock: {
-    marginTop: 40,
-    backgroundColor: "#111827",
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: "#1f2937",
-    padding: 16,
-    alignItems: "center",
-  },
-  emptyTitle: {
-    color: "#fff",
-    fontWeight: "800",
-    fontSize: 15,
-    marginBottom: 6,
-    textAlign: "center",
-  },
-  emptyText: {
-    color: "#9ca3af",
-    textAlign: "center",
-    lineHeight: 20,
+    marginTop: 28,
   },
 });

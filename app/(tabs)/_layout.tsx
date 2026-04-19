@@ -7,8 +7,12 @@ import { DrawerToggleButton } from "@react-navigation/drawer";
 
 export default function TabsLayout() {
   const insets = useSafeAreaInsets();
-  const tabBarBottomPadding = Math.max(insets.bottom, 8);
-  const tabBarHeight = 64 + insets.bottom;
+  const tabBarBottomPadding = Math.max(insets.bottom, 12);
+  const tabBarHeight = 70 + insets.bottom;
+
+  React.useEffect(() => {
+    console.log("BOTTOM_INSET", insets.bottom);
+  }, [insets.bottom]);
 
   return (
     <Tabs
@@ -24,6 +28,10 @@ export default function TabsLayout() {
         headerTintColor: "#f8fafc",
         headerTitleStyle: { fontWeight: "800", fontSize: 17 },
         tabBarStyle: {
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
           backgroundColor: "#0b1220",
           borderTopWidth: 1,
           borderTopColor: "#1f2937",
@@ -36,7 +44,9 @@ export default function TabsLayout() {
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "700",
+          marginBottom: 4,
         },
+        tabBarItemStyle: { paddingVertical: 4 },
         headerLeft: () => (
           <View style={{ marginLeft: 8 }}>
             <DrawerToggleButton tintColor="#f8fafc" />

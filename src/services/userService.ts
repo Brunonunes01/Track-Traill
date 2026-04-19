@@ -1,5 +1,5 @@
 import { get, onValue, ref, runTransaction, set, update } from "firebase/database";
-import { database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
+import { auth, database, normalizeFirebaseErrorMessage } from "../../services/connectionFirebase";
 
 type EnsureProfileInput = {
   uid: string;
@@ -34,6 +34,15 @@ export const isUsernameValid = (value: string) => /^[a-z0-9_]{3,20}$/.test(value
 
 const USERNAME_FLOW_PREFIX = "[username-flow]";
 const CONNECTION_TIMEOUT_MS = 3000;
+
+const isPermissionDeniedError = (error: unknown) => {
+  const code = String((error as any)?.code || "").toLowerCase();
+  const message = String((error as any)?.message || "").toLowerCase();
+  return code.includes("permission_denied") || message.includes("permission_denied");
+};
+
+const buildFallbackUsername = (uid: string) =>
+  normalizeUsername(`user_${String(uid || "").slice(0, 8)}`).slice(0, 20);
 
 const ensureDatabaseConnected = async () => {
   // O Firebase no React Native já gerencia a conectividade internamente.
@@ -95,7 +104,9 @@ const reserveUsername = async (username: string, uid: string) => {
       if (current === null || current === uid) {
         return uid;
       }
-      return current;
+      // Aborta a transação se o username já estiver ocupado por outro UID.
+      // Isso evita tentativas de escrita que violariam as regras de segurança (permission_denied).
+      return;
     });
 
     if (!transactionResult.committed) {
@@ -114,15 +125,37 @@ const reserveUsername = async (username: string, uid: string) => {
       error,
       "Falha ao reservar username."
     );
+    const code = String((error as any)?.code || "").toLowerCase();
+    const rawMessage = String((error as any)?.message || "").toLowerCase();
+    const normalizedMessage = String(message || "").toLowerCase();
+    
+    const isDisconnect = code.includes("disconnect") || rawMessage.includes("disconnect");
+    const isPermission = code.includes("permission_denied") || rawMessage.includes("permission_denied");
+    const isUsernameTaken =
+      normalizedMessage.includes("já está em uso") ||
+      rawMessage.includes("já está em uso") ||
+      rawMessage.includes("already in use");
 
-    console.error(`${USERNAME_FLOW_PREFIX} transaction:failure`, {
+    const reason = isDisconnect
+      ? "disconnect"
+      : isPermission
+        ? "permission_denied"
+        : isUsernameTaken
+          ? "username_taken"
+          : "error";
+    
+    const payload = {
       path: txPath,
       uid,
-      reason: String((error as any)?.code || "").toLowerCase().includes("disconnect")
-        ? "disconnect"
-        : "error",
+      reason,
       rawMessage: error?.message || String(error),
-    });
+    };
+
+    if (reason === "permission_denied" || reason === "username_taken") {
+      console.warn(`${USERNAME_FLOW_PREFIX} transaction:failure`, payload);
+    } else {
+      console.error(`${USERNAME_FLOW_PREFIX} transaction:failure`, payload);
+    }
 
     throw new Error(message);
   }
@@ -142,6 +175,13 @@ const createCandidateFromSource = (source: string) => {
   const base = normalizeUsername(source).replace(/_+/g, "_");
   if (base.length >= 3) return base.slice(0, 20);
   return `track_${Math.random().toString(36).slice(2, 8)}`;
+};
+
+const assertAuthenticatedUid = (uid: string, operation: string) => {
+  const currentUid = auth.currentUser?.uid || "";
+  if (!uid?.trim() || !currentUid || currentUid !== uid) {
+    throw new Error(`Sessão inválida para ${operation}. Faça login novamente.`);
+  }
 };
 
 const generateUniqueUsername = async (source: string, uid: string) => {
@@ -168,23 +208,31 @@ const generateUniqueUsername = async (source: string, uid: string) => {
 };
 
 export const registerUserProfile = async (input: RegisterProfileInput) => {
+  assertAuthenticatedUid(input.uid, "registrar perfil");
   const normalized = await reserveUsername(input.username, input.uid);
 
-  await set(ref(database, `users/${input.uid}`), {
-    fullName: input.fullName.trim(),
-    username: normalized,
-    email: input.email,
-    birthDate: input.birthDate?.trim() || "",
-    phone: input.phone?.trim() || "",
-    address: input.address?.trim() || "",
-    role: "user",
-    createdAt: new Date().toISOString(),
-  });
+  try {
+    await set(ref(database, `users/${input.uid}`), {
+      fullName: input.fullName.trim(),
+      username: normalized,
+      email: input.email,
+      birthDate: input.birthDate?.trim() || "",
+      phone: input.phone?.trim() || "",
+      address: input.address?.trim() || "",
+      createdAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    await releaseUsername(normalized);
+    throw new Error(
+      normalizeFirebaseErrorMessage(error, "Falha ao salvar perfil do usuário.")
+    );
+  }
 
   return normalized;
 };
 
 export const ensureUserProfileCompatibility = async (input: EnsureProfileInput) => {
+  assertAuthenticatedUid(input.uid, "validar perfil");
   const userRef = ref(database, `users/${input.uid}`);
   const snapshot = await get(userRef);
 
@@ -194,16 +242,45 @@ export const ensureUserProfileCompatibility = async (input: EnsureProfileInput) 
   let username = normalizeUsername(existing.username || "");
 
   if (!isUsernameValid(username)) {
-    username = await generateUniqueUsername(baseName, input.uid);
+    try {
+      username = await generateUniqueUsername(baseName, input.uid);
+    } catch (error) {
+      if (!isPermissionDeniedError(error)) {
+        throw error;
+      }
+      username = buildFallbackUsername(input.uid);
+      console.warn(`${USERNAME_FLOW_PREFIX} compatibility:fallback-username`, {
+        uid: input.uid,
+        reason: "permission_denied",
+      });
+    }
   } else {
-    await reserveUsername(username, input.uid);
+    try {
+      await reserveUsername(username, input.uid);
+    } catch (error) {
+      if ((error as any)?.message === "Este username já está em uso.") {
+        username = await generateUniqueUsername(baseName, input.uid);
+        console.warn(`${USERNAME_FLOW_PREFIX} compatibility:username-conflict`, {
+          uid: input.uid,
+          previousUsername: normalizeUsername(existing.username || ""),
+          nextUsername: username,
+        });
+      } else if (!isPermissionDeniedError(error)) {
+        throw error;
+      } else {
+        console.warn(`${USERNAME_FLOW_PREFIX} compatibility:skip-reserve`, {
+          uid: input.uid,
+          username,
+          reason: "permission_denied",
+        });
+      }
+    }
   }
 
   const payload = {
     fullName: existing.fullName || input.fullName || "Usuário",
     username,
     email: existing.email || input.email || "",
-    role: existing.role || "user",
     updatedAt: new Date().toISOString(),
   };
 
@@ -217,6 +294,7 @@ export const ensureUserProfileCompatibility = async (input: EnsureProfileInput) 
 };
 
 export const updatePublicProfile = async (input: UpdateProfileInput) => {
+  assertAuthenticatedUid(input.uid, "atualizar perfil");
   const userRef = ref(database, `users/${input.uid}`);
   const snapshot = await get(userRef);
   if (!snapshot.exists()) {
@@ -235,14 +313,27 @@ export const updatePublicProfile = async (input: UpdateProfileInput) => {
 
   if (newUsername !== currentUsername) {
     await reserveUsername(newUsername, input.uid);
-    await releaseUsername(currentUsername);
-  }
+    try {
+      await update(userRef, {
+        fullName: input.fullName.trim(),
+        username: newUsername,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      await releaseUsername(newUsername);
+      throw new Error(
+        normalizeFirebaseErrorMessage(error, "Falha ao atualizar perfil.")
+      );
+    }
 
-  await update(userRef, {
-    fullName: input.fullName.trim(),
-    username: newUsername,
-    updatedAt: new Date().toISOString(),
-  });
+    await releaseUsername(currentUsername);
+  } else {
+    await update(userRef, {
+      fullName: input.fullName.trim(),
+      username: newUsername,
+      updatedAt: new Date().toISOString(),
+    });
+  }
 
   return {
     fullName: input.fullName.trim(),

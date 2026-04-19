@@ -4,30 +4,67 @@ import { LinearGradient } from "expo-linear-gradient";
 import * as Location from "expo-location";
 import { onValue, ref, remove, update } from "firebase/database";
 import React, { useEffect, useLayoutEffect, useState } from "react";
-import {
-  Alert,
-  FlatList,
-  ImageBackground,
-  Modal,
-  SafeAreaView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { Alert, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { auth, database } from "../../services/connectionFirebase";
 import WeatherCard from "../components/WeatherCard";
+import { AppCard, EmptyState, SectionTitle } from "../components/ui";
+import { getPendingSyncActivities, removePendingSyncActivity } from "../services/activityTrackingService";
+import { colors, layout, radius, spacing } from "../theme/designSystem";
 
 type WeatherCoordinates = {
   latitude: number;
   longitude: number;
 };
 
+type ActivityGeoPoint = {
+  latitude: number;
+  longitude: number;
+  altitude?: number | null;
+  timestamp?: number;
+};
+
+type DashboardActivity = {
+  id: string;
+  isPending?: boolean;
+  status?: string;
+  sessionId?: string;
+  tipo?: string;
+  cidade?: string;
+  data?: string;
+  duracao?: number;
+  distancia?: number;
+  criadoEm?: string;
+  rota?: ActivityGeoPoint[];
+  points?: ActivityGeoPoint[];
+};
+
+const toFiniteNumber = (value: unknown, fallback = 0) => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeActivity = (id: string, raw: any, isPending: boolean): DashboardActivity => ({
+  id,
+  isPending,
+  status: typeof raw?.status === "string" ? raw.status : undefined,
+  sessionId: typeof raw?.sessionId === "string" ? raw.sessionId : undefined,
+  tipo: typeof raw?.tipo === "string" ? raw.tipo : undefined,
+  cidade: typeof raw?.cidade === "string" ? raw.cidade : undefined,
+  data: typeof raw?.data === "string" ? raw.data : undefined,
+  duracao: toFiniteNumber(raw?.duracao, 0),
+  distancia: toFiniteNumber(raw?.distancia, 0),
+  criadoEm: typeof raw?.criadoEm === "string" ? raw.criadoEm : undefined,
+  rota: Array.isArray(raw?.rota) ? raw.rota : undefined,
+  points: Array.isArray(raw?.points) ? raw.points : undefined,
+});
+
 export default function DashboardScreen() {
-  const [atividades, setAtividades] = useState<any[]>([]);
+  const [atividades, setAtividades] = useState<DashboardActivity[]>([]);
+  const [firebaseAtividades, setFirebaseAtividades] = useState<DashboardActivity[]>([]);
+  const [localPendingAtividades, setLocalPendingAtividades] = useState<DashboardActivity[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
-  const [editItem, setEditItem] = useState<any>(null);
+  const [editItem, setEditItem] = useState<DashboardActivity | null>(null);
 
   const [tipo, setTipo] = useState("");
   const [cidade, setCidade] = useState("");
@@ -40,16 +77,37 @@ export default function DashboardScreen() {
   const [resolvingWeatherCoordinates, setResolvingWeatherCoordinates] = useState(true);
 
   const navigation = useNavigation<any>();
+  const insets = useSafeAreaInsets();
   const user = auth.currentUser;
 
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerStyle: { backgroundColor: "#0b1220" },
-      headerTintColor: "#fff",
+      headerStyle: { backgroundColor: colors.background },
+      headerTintColor: colors.textPrimary,
       headerTitle: "Histórico de Atividades",
     });
   }, [navigation]);
 
+  // Carregar do Local (Sync Queue)
+  const refreshLocalPending = async () => {
+    try {
+      const pending = await getPendingSyncActivities();
+      const normalizedPending = pending
+        .filter((item): item is DashboardActivity => Boolean(item?.id))
+        .map((item) => normalizeActivity(String(item.id), item, true));
+      setLocalPendingAtividades(normalizedPending);
+    } catch (err) {
+      console.warn("[dashboard] failed to fetch local pending activities:", err);
+    }
+  };
+
+  useEffect(() => {
+    refreshLocalPending();
+    const interval = setInterval(refreshLocalPending, 10000); // Poll local status every 10s
+    return () => clearInterval(interval);
+  }, []);
+
+  // Carregar do Firebase
   useEffect(() => {
     if (!user) return;
 
@@ -57,32 +115,41 @@ export default function DashboardScreen() {
     const unsubscribe = onValue(activitiesRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) {
-        setAtividades([]);
+        setFirebaseAtividades([]);
         return;
       }
 
-      const parsed = Object.keys(data).map((key) => ({ id: key, ...data[key] }));
-      const sorted = parsed.sort(
-        (a, b) => new Date(b.criadoEm || b.data).getTime() - new Date(a.criadoEm || a.data).getTime()
-      );
-      setAtividades(sorted);
+      const parsed = Object.keys(data).map((key) => normalizeActivity(key, data[key], false));
+      setFirebaseAtividades(parsed);
     });
 
     return () => unsubscribe();
   }, [user]);
 
+  // Mesclar Atividades
+  useEffect(() => {
+    // Evita duplicados (atividades que acabaram de ser sincronizadas mas ainda estão na fila local)
+    const syncedIds = new Set(firebaseAtividades.map((item) => item.sessionId || item.id));
+    const filteredLocal = localPendingAtividades.filter((item) => !syncedIds.has(item.id));
+
+    const combined = [...filteredLocal, ...firebaseAtividades];
+    const sorted = combined.sort(
+      (a, b) => new Date(b.criadoEm || b.data || 0).getTime() - new Date(a.criadoEm || a.data || 0).getTime()
+    );
+    setAtividades(sorted);
+  }, [firebaseAtividades, localPendingAtividades]);
+
   useEffect(() => {
     let cancelled = false;
 
     const routeAnchor = atividades.find((item) => {
-      const firstPoint = item?.rota?.[0];
+      const firstPoint = item?.rota?.[0] || item?.points?.[0];
       return (
-        Array.isArray(item?.rota) &&
-        item.rota.length > 0 &&
+        (Array.isArray(item?.rota) || Array.isArray(item?.points)) &&
         typeof firstPoint?.latitude === "number" &&
         typeof firstPoint?.longitude === "number"
       );
-    })?.rota?.[0];
+    })?.rota?.[0] || atividades.find((item) => item.points?.[0])?.points?.[0];
 
     if (routeAnchor) {
       setWeatherCoordinates({ latitude: routeAnchor.latitude, longitude: routeAnchor.longitude });
@@ -90,6 +157,7 @@ export default function DashboardScreen() {
       setResolvingWeatherCoordinates(false);
       return;
     }
+
 
     const resolveCurrentLocation = async () => {
       try {
@@ -145,7 +213,7 @@ export default function DashboardScreen() {
     return `${min < 10 ? "0" : ""}${min}:${seg < 10 ? "0" : ""}${seg}`;
   };
 
-  const openEditModal = (item: any) => {
+  const openEditModal = (item: DashboardActivity) => {
     setEditItem(item);
     setTipo(String(item.tipo || ""));
     setCidade(String(item.cidade || ""));
@@ -173,79 +241,102 @@ export default function DashboardScreen() {
       .catch((err) => Alert.alert("Erro", err.message));
   };
 
-  const handleDelete = (item: any) => {
+  const handleDelete = (item: DashboardActivity) => {
     Alert.alert("Excluir atividade", "Tem certeza? Essa ação não pode ser desfeita.", [
       { text: "Cancelar", style: "cancel" },
       {
         text: "Excluir",
         style: "destructive",
-        onPress: () => {
-          const activityRef = ref(database, `users/${user?.uid}/atividades/${item.id}`);
-          remove(activityRef);
+        onPress: async () => {
+          if (item?.isPending) {
+            try {
+              await removePendingSyncActivity(String(item.id));
+              await refreshLocalPending();
+            } catch (error: any) {
+              Alert.alert("Erro", error?.message || "Não foi possível excluir a atividade pendente.");
+            }
+            return;
+          }
+
+          if (!user?.uid) {
+            Alert.alert("Erro", "Usuário não autenticado.");
+            return;
+          }
+
+          try {
+            const activityRef = ref(database, `users/${user?.uid}/atividades/${item.id}`);
+            await remove(activityRef);
+          } catch (error: any) {
+            Alert.alert("Erro", error?.message || "Não foi possível excluir a atividade.");
+          }
         },
       },
     ]);
   };
 
-  const renderActivityCard = ({ item }: { item: any }) => {
+  const renderActivityCard = ({ item }: { item: DashboardActivity }) => {
+    const isPending = !!item.isPending;
+
     return (
       <TouchableOpacity
-        activeOpacity={0.92}
+        activeOpacity={0.9}
         style={styles.cardTouchable}
         onPress={() => navigation.navigate("ActivityView", { atividade: item })}
       >
-        <ImageBackground
-          source={require("../../assets/images/Corrida.jpg")}
-          style={styles.cardBg}
-          imageStyle={styles.cardImage}
-        >
-          <LinearGradient colors={["rgba(2,6,23,0.1)", "rgba(2,6,23,0.82)"]} style={styles.cardOverlay}>
-            <View style={styles.cardHeaderRow}>
+        <AppCard style={[styles.card, isPending && styles.cardPending]}>
+          <View style={styles.cardHeaderRow}>
+            <View style={styles.titleWithSync}>
               <Text style={styles.itemTitle}>{capitalize(item.tipo)}</Text>
-              <View style={styles.dateBadge}>
-                <Text style={styles.dateText}>{String(item.data || "Sem data")}</Text>
-              </View>
+              <Ionicons
+                name={isPending ? "cloud-upload-outline" : "cloud-done-outline"}
+                size={16}
+                color={isPending ? "#fbbf24" : "#10b981"}
+                style={styles.syncIcon}
+              />
             </View>
+            <View style={styles.dateBadge}>
+              <Text style={styles.dateText}>{String(item.data || "Sem data")}</Text>
+            </View>
+          </View>
 
-            <View style={styles.statsContainer}>
-              <View style={styles.statItem}>
-                <Ionicons name="time-outline" size={16} color="#cbd5e1" />
-                <Text style={styles.statValue}>{formatarDuracao(Number(item.duracao || 0))}</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Ionicons name="resize-outline" size={16} color="#cbd5e1" />
-                <Text style={styles.statValue}>{Number(item.distancia || 0).toFixed(2)} km</Text>
-              </View>
-              <View style={styles.statItem}>
-                <Ionicons name="location-outline" size={16} color="#cbd5e1" />
-                <Text numberOfLines={1} style={styles.statValue}>{String(item.cidade || "Não informado")}</Text>
-              </View>
+          <View style={styles.statsContainer}>
+            <View style={styles.statItem}>
+              <Ionicons name="time-outline" size={16} color={colors.textSecondary} />
+              <Text style={styles.statValue}>{formatarDuracao(Number(item.duracao || 0))}</Text>
             </View>
+            <View style={styles.statItem}>
+              <Ionicons name="resize-outline" size={16} color={colors.textSecondary} />
+              <Text style={styles.statValue}>{toFiniteNumber(item.distancia, 0).toFixed(2)} km</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Ionicons name="location-outline" size={16} color={colors.textSecondary} />
+              <Text numberOfLines={1} style={styles.statValue}>{String(item.cidade || "Não informado")}</Text>
+            </View>
+          </View>
 
-            <View style={styles.actionRow}>
-              <TouchableOpacity onPress={() => openEditModal(item)} style={styles.miniBtn}>
-                <Ionicons name="create-outline" size={18} color="#fff" />
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => handleDelete(item)} style={[styles.miniBtn, styles.deleteBtn]}>
-                <Ionicons name="trash-outline" size={18} color="#fecaca" />
-              </TouchableOpacity>
-            </View>
-          </LinearGradient>
-        </ImageBackground>
+          <View style={styles.actionRow}>
+            <TouchableOpacity onPress={() => openEditModal(item)} style={styles.miniBtn}>
+              <Ionicons name="create-outline" size={16} color={colors.textPrimary} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => handleDelete(item)} style={[styles.miniBtn, styles.deleteBtn]}>
+              <Ionicons name="trash-outline" size={16} color="#fecaca" />
+            </TouchableOpacity>
+          </View>
+        </AppCard>
       </TouchableOpacity>
     );
   };
 
   const listHeader = (
-    <View>
-      <View style={styles.headerRow}>
-        <View>
-          <Text style={styles.title}>Minhas Aventuras</Text>
-          <Text style={styles.countText}>{atividades.length} registro(s)</Text>
-        </View>
-      </View>
+    <View style={styles.headerArea}>
+      <AppCard style={styles.headerCard}>
+        <SectionTitle
+          title="Minhas Aventuras"
+          subtitle={`${atividades.length} registro(s)`}
+        />
+      </AppCard>
 
-      <View style={styles.weatherSection}>
+      <AppCard style={styles.weatherSection}>
         <Text style={styles.weatherTitle}>Condição do tempo</Text>
 
         {weatherCoordinates ? (
@@ -265,227 +356,297 @@ export default function DashboardScreen() {
             Fonte: {weatherSource === "route" ? "última rota registrada" : "localização atual"}
           </Text>
         )}
-      </View>
+      </AppCard>
     </View>
   );
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ImageBackground source={require("../../assets/images/Azulao.png")} resizeMode="cover" style={styles.background}>
-        <LinearGradient colors={["rgba(2,6,23,0.78)", "rgba(2,6,23,0.92)"]} style={styles.overlay}>
-          <FlatList
-            data={atividades}
-            keyExtractor={(item) => item.id}
-            ListHeaderComponent={listHeader}
-            renderItem={renderActivityCard}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            ListEmptyComponent={
-              <View style={styles.emptyState}>
-                <Ionicons name="trail-sign-outline" size={34} color="#7dd3fc" />
-                <Text style={styles.emptyTitle}>Nenhuma atividade registrada</Text>
-                <Text style={styles.emptyText}>
-                  Inicie uma atividade para começar a construir seu histórico.
-                </Text>
+    <View style={styles.container}>
+      <LinearGradient
+        colors={["#08101D", "#0B1220", "#121F36"]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={StyleSheet.absoluteFillObject}
+      />
+
+      <FlatList
+        data={atividades}
+        keyExtractor={(item) => String(item.id)}
+        ListHeaderComponent={listHeader}
+        renderItem={renderActivityCard}
+        contentContainerStyle={[
+          styles.listContent,
+          {
+            paddingTop: insets.top + spacing.sm,
+            paddingBottom: Math.max(insets.bottom + 28, 40),
+          },
+        ]}
+        showsVerticalScrollIndicator={false}
+        ListEmptyComponent={
+          <View style={styles.emptyStateWrap}>
+            <EmptyState
+              title="Nenhuma atividade registrada"
+              description="Inicie uma atividade para começar a construir seu histórico."
+              icon="trail-sign-outline"
+            />
+          </View>
+        }
+      />
+
+      <Modal visible={modalVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <AppCard style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Editar registro</Text>
+
+            <Text style={styles.label}>Tipo</Text>
+            <TextInput style={styles.input} value={tipo} onChangeText={setTipo} placeholderTextColor={colors.textMuted} />
+
+            <Text style={styles.label}>Cidade</Text>
+            <TextInput style={styles.input} value={cidade} onChangeText={setCidade} placeholderTextColor={colors.textMuted} />
+
+            <View style={styles.inputRow}>
+              <View style={styles.inputCol}>
+                <Text style={styles.label}>Data</Text>
+                <TextInput style={styles.input} value={data} onChangeText={setData} placeholderTextColor={colors.textMuted} />
               </View>
-            }
-          />
-
-          <Modal visible={modalVisible} transparent animationType="fade">
-            <View style={styles.modalOverlay}>
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Editar registro</Text>
-
-                <Text style={styles.label}>Tipo</Text>
-                <TextInput style={styles.input} value={tipo} onChangeText={setTipo} placeholderTextColor="#94a3b8" />
-
-                <Text style={styles.label}>Cidade</Text>
-                <TextInput style={styles.input} value={cidade} onChangeText={setCidade} placeholderTextColor="#94a3b8" />
-
-                <View style={styles.inputRow}>
-                  <View style={styles.inputCol}>
-                    <Text style={styles.label}>Data</Text>
-                    <TextInput style={styles.input} value={data} onChangeText={setData} placeholderTextColor="#94a3b8" />
-                  </View>
-                  <View style={styles.inputCol}>
-                    <Text style={styles.label}>Duração (min)</Text>
-                    <TextInput
-                      style={styles.input}
-                      value={duracao}
-                      keyboardType="numeric"
-                      onChangeText={setDuracao}
-                      placeholderTextColor="#94a3b8"
-                    />
-                  </View>
-                </View>
-
-                <Text style={styles.label}>Distância (km)</Text>
+              <View style={styles.inputCol}>
+                <Text style={styles.label}>Duração (min)</Text>
                 <TextInput
                   style={styles.input}
-                  value={distancia}
+                  value={duracao}
                   keyboardType="numeric"
-                  onChangeText={setDistancia}
-                  placeholderTextColor="#94a3b8"
+                  onChangeText={setDuracao}
+                  placeholderTextColor={colors.textMuted}
                 />
-
-                <View style={styles.modalButtons}>
-                  <TouchableOpacity style={styles.cancelButton} onPress={() => setModalVisible(false)}>
-                    <Text style={styles.btnTextConfig}>Cancelar</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.saveButton} onPress={handleSaveEdit}>
-                    <Text style={[styles.btnTextConfig, { color: "#fff" }]}>Salvar</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
             </View>
-          </Modal>
-        </LinearGradient>
-      </ImageBackground>
-    </SafeAreaView>
+
+            <Text style={styles.label}>Distância (km)</Text>
+            <TextInput
+              style={styles.input}
+              value={distancia}
+              keyboardType="numeric"
+              onChangeText={setDistancia}
+              placeholderTextColor={colors.textMuted}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.cancelButton} onPress={() => setModalVisible(false)}>
+                <Text style={styles.btnTextConfig}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveButton} onPress={handleSaveEdit}>
+                <Text style={styles.saveText}>Salvar</Text>
+              </TouchableOpacity>
+            </View>
+          </AppCard>
+        </View>
+      </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#020617" },
-  background: { flex: 1 },
-  overlay: { flex: 1 },
-  listContent: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28 },
-  headerRow: { marginBottom: 14 },
-  title: { fontSize: 26, fontWeight: "800", color: "#f8fafc" },
-  countText: { color: "#94a3b8", fontSize: 13, marginTop: 4 },
-
-  weatherSection: { marginBottom: 12 },
-  weatherTitle: { color: "#e2e8f0", fontSize: 15, fontWeight: "700", marginBottom: 8 },
-  weatherFallback: {
-    backgroundColor: "rgba(15,23,42,0.72)",
-    borderWidth: 1,
-    borderColor: "rgba(148,163,184,0.3)",
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 10,
-  },
-  weatherFallbackText: { color: "#cbd5e1", fontSize: 13, lineHeight: 19 },
-  weatherSourceText: { color: "#94a3b8", fontSize: 12, marginBottom: 4 },
-
-  cardTouchable: { marginBottom: 14 },
-  cardBg: { height: 178, justifyContent: "flex-end" },
-  cardImage: { borderRadius: 16 },
-  cardOverlay: {
-    borderRadius: 16,
-    padding: 14,
-    height: "100%",
-    justifyContent: "space-between",
-  },
-  cardHeaderRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", gap: 8 },
-  itemTitle: {
+  container: {
     flex: 1,
-    color: "#fff",
-    fontSize: 22,
-    fontWeight: "800",
-    textTransform: "capitalize",
-    textShadowColor: "rgba(2,6,23,0.9)",
-    textShadowRadius: 8,
+    backgroundColor: colors.background,
   },
-  dateBadge: {
-    backgroundColor: "rgba(15,23,42,0.7)",
+  listContent: {
+    paddingHorizontal: layout.screenPaddingHorizontal,
+  },
+  headerArea: {
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  headerCard: {
+    backgroundColor: "rgba(11, 18, 32, 0.72)",
+  },
+  weatherSection: {
+    backgroundColor: "rgba(11, 18, 32, 0.72)",
+    marginBottom: spacing.xs,
+  },
+  weatherTitle: {
+    color: colors.textSecondary,
+    fontSize: 15,
+    fontWeight: "700",
+    marginBottom: spacing.xs,
+  },
+  weatherFallback: {
+    backgroundColor: colors.surfaceAlt,
     borderWidth: 1,
-    borderColor: "rgba(125,211,252,0.35)",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
+    borderColor: colors.border,
+    borderRadius: radius.md,
+    padding: spacing.sm,
   },
-  dateText: { color: "#e0f2fe", fontSize: 11, fontWeight: "700" },
+  weatherFallbackText: {
+    color: colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  weatherSourceText: {
+    color: colors.textMuted,
+    fontSize: 12,
+    marginTop: spacing.xs,
+  },
 
-  statsContainer: {
-    backgroundColor: "rgba(2,6,23,0.58)",
-    borderRadius: 12,
-    padding: 10,
+  cardTouchable: {
+    marginBottom: spacing.sm,
+  },
+  card: {
+    padding: spacing.md,
+    backgroundColor: "rgba(18, 28, 46, 0.95)",
+  },
+  cardPending: {
+    borderColor: "rgba(251, 191, 36, 0.3)",
+    borderWidth: 1,
+  },
+  cardHeaderRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  titleWithSync: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
     gap: 8,
   },
-  statItem: { flexDirection: "row", alignItems: "center", gap: 6 },
-  statValue: { color: "#f1f5f9", fontWeight: "700", fontSize: 13, flex: 1 },
-
-  actionRow: { position: "absolute", top: 10, right: 10, flexDirection: "row", gap: 8 },
-  miniBtn: {
-    backgroundColor: "rgba(2,6,23,0.6)",
+  syncIcon: {
+    marginTop: 2,
+  },
+  itemTitle: {
+    color: colors.textPrimary,
+    fontSize: 19,
+    fontWeight: "800",
+    textTransform: "capitalize",
+  },
+  dateBadge: {
+    backgroundColor: colors.surfaceSoft,
     borderWidth: 1,
-    borderColor: "rgba(148,163,184,0.35)",
-    padding: 7,
-    borderRadius: 999,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 4,
+    borderRadius: radius.round,
+  },
+  dateText: {
+    color: colors.textSecondary,
+    fontSize: 11,
+    fontWeight: "700",
+  },
+  statsContainer: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.sm,
+    gap: spacing.xs,
+    marginTop: spacing.sm,
+  },
+  statItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+  },
+  statValue: {
+    color: colors.textPrimary,
+    fontWeight: "700",
+    fontSize: 13,
+    flex: 1,
+  },
+  actionRow: {
+    marginTop: spacing.sm,
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: spacing.xs,
+  },
+  miniBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: radius.round,
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: "center",
+    justifyContent: "center",
   },
   deleteBtn: {
-    backgroundColor: "rgba(127, 29, 29, 0.45)",
+    backgroundColor: "rgba(127,29,29,0.45)",
     borderColor: "rgba(248,113,113,0.45)",
   },
 
-  emptyState: {
-    marginTop: 48,
-    alignItems: "center",
-    paddingHorizontal: 20,
-  },
-  emptyTitle: {
-    marginTop: 10,
-    color: "#e2e8f0",
-    fontSize: 16,
-    fontWeight: "800",
-  },
-  emptyText: {
-    marginTop: 6,
-    color: "#94a3b8",
-    textAlign: "center",
-    fontSize: 13,
+  emptyStateWrap: {
+    marginTop: spacing.xl,
   },
 
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(2,6,23,0.75)",
+    backgroundColor: "rgba(2, 6, 23, 0.78)",
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 16,
+    paddingHorizontal: layout.screenPaddingHorizontal,
   },
   modalContent: {
     width: "100%",
     maxWidth: 460,
-    backgroundColor: "#0f172a",
-    borderRadius: 18,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: "rgba(148,163,184,0.3)",
+    backgroundColor: colors.surface,
   },
   modalTitle: {
-    color: "#f8fafc",
+    color: colors.textPrimary,
     fontSize: 19,
     fontWeight: "800",
-    marginBottom: 16,
+    marginBottom: spacing.md,
     textAlign: "center",
   },
-  label: { color: "#cbd5e1", marginBottom: 6, fontSize: 13, fontWeight: "600" },
-  input: {
-    backgroundColor: "rgba(30,41,59,0.72)",
-    borderWidth: 1,
-    borderColor: "rgba(148,163,184,0.32)",
-    color: "#f8fafc",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 12,
+  label: {
+    color: colors.textSecondary,
+    marginBottom: 6,
+    fontSize: 13,
+    fontWeight: "600",
   },
-  inputRow: { flexDirection: "row", gap: 10 },
-  inputCol: { flex: 1 },
-  modalButtons: { flexDirection: "row", gap: 10, marginTop: 6 },
+  input: {
+    backgroundColor: colors.surfaceAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    color: colors.textPrimary,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 10,
+    marginBottom: spacing.sm,
+  },
+  inputRow: {
+    flexDirection: "row",
+    gap: spacing.xs,
+  },
+  inputCol: {
+    flex: 1,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    gap: spacing.xs,
+    marginTop: spacing.xs,
+  },
   saveButton: {
     flex: 1,
-    backgroundColor: "#2563eb",
+    backgroundColor: colors.primary,
     paddingVertical: 13,
-    borderRadius: 10,
+    borderRadius: radius.sm,
     alignItems: "center",
   },
   cancelButton: {
     flex: 1,
-    backgroundColor: "rgba(148,163,184,0.2)",
+    backgroundColor: colors.surfaceSoft,
+    borderWidth: 1,
+    borderColor: colors.border,
     paddingVertical: 13,
-    borderRadius: 10,
+    borderRadius: radius.sm,
     alignItems: "center",
   },
-  btnTextConfig: { fontWeight: "800", color: "#cbd5e1" },
+  btnTextConfig: {
+    fontWeight: "800",
+    color: colors.textSecondary,
+  },
+  saveText: {
+    fontWeight: "800",
+    color: colors.white,
+  },
 });

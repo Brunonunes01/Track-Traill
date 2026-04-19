@@ -1,6 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useIsFocused } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
+import { onAuthStateChanged } from "firebase/auth";
 import * as Location from "expo-location";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -19,14 +20,22 @@ import MapView, { MapType, Marker, Polyline, PROVIDER_DEFAULT } from "react-nati
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import AlertCard from "../components/AlertCard";
 import AlertMarker from "../components/AlertMarker";
+import POIMarker from "../components/POIMarker";
 import RouteMarker from "../components/RouteMarker";
 import { TrackTrailRoute, TrailAlert } from "../models/alerts";
 import { subscribeAlerts } from "../services/alertService";
-import { calculateDistanceKm, subscribeOfficialRoutes } from "../services/routeService";
-import { FALLBACK_REGION, getRegionWithFallback, toCoordinate, toCoordinateArray } from "../utils/geo";
+import { auth } from "../../services/connectionFirebase";
+import { PointOfInterest, POI_TYPE_META } from "../models/poi";
+import { fetchPOIs } from "../services/poiService";
+import { calculateDistanceKm, subscribeOfficialRoutes, subscribeUserRoutes } from "../services/routeService";
+import { FALLBACK_REGION, toCoordinate, toCoordinateArray } from "../utils/geo";
 
 const NEARBY_RADIUS_KM = 20;
 const normalizeRouteType = (value?: string) => (value || "").trim().toLowerCase();
+const isOfflineFallbackMessage = (message?: string | null) => {
+  const msg = String(message || "").toLowerCase();
+  return msg.includes("cache offline") || msg.includes("sem conexão");
+};
 type RouteDistance = TrackTrailRoute & {
   distanceFromUserKm?: number;
 };
@@ -38,33 +47,101 @@ export default function HomeScreen({ navigation }: any) {
   const [location, setLocation] = useState<Location.LocationObject | null>(null);
   const [hasPermission, setHasPermission] = useState<boolean>(false);
   const [routes, setRoutes] = useState<TrackTrailRoute[]>([]);
-  // ... (outros estados omitidos para clareza, mas mantidos no arquivo)
+  const [userRoutes, setUserRoutes] = useState<TrackTrailRoute[]>([]);
   const [alerts, setAlerts] = useState<TrailAlert[]>([]);
+  const [pois, setPois] = useState<PointOfInterest[]>([]);
   const [selectedRoute, setSelectedRoute] = useState<RouteDistance | null>(null);
   const [selectedAlert, setSelectedAlert] = useState<TrailAlert | null>(null);
+  const [selectedPOI, setSelectedPOI] = useState<PointOfInterest | null>(null);
   const [mapType, setMapType] = useState<MapType>("standard");
   const [activeFilter, setActiveFilter] = useState("Todos");
+  const [sourceFilter, setSourceFilter] = useState<"all" | "mine" | "community">("all");
   const [nearbyOnly, setNearbyOnly] = useState(false);
   const [routeActionVisible, setRouteActionVisible] = useState(false);
   const [loadingRoutes, setLoadingRoutes] = useState(true);
   const [loadingAlerts, setLoadingAlerts] = useState(true);
+  const [loadingPois, setLoadingPois] = useState(true);
   const [routeError, setRouteError] = useState<string | null>(null);
+  const [userRoutesError, setUserRoutesError] = useState<string | null>(null);
   const [alertError, setAlertError] = useState<string | null>(null);
+  const [poiError, setPoiError] = useState<string | null>(null);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [uid, setUid] = useState("");
+  const [authResolved, setAuthResolved] = useState(false);
 
   const mapRef = useRef<MapView>(null);
   const locationWatcherRef = useRef<Location.LocationSubscription | null>(null);
+  const loadingRoutesRef = useRef(true);
+  const loadingAlertsRef = useRef(true);
+
+  useEffect(() => {
+    loadingRoutesRef.current = loadingRoutes;
+  }, [loadingRoutes]);
+
+  useEffect(() => {
+    loadingAlertsRef.current = loadingAlerts;
+  }, [loadingAlerts]);
+
+  useEffect(() => {
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setUid(user?.uid || "");
+      setAuthResolved(true);
+    });
+
+    return unsubscribeAuth;
+  }, []);
+
+  useEffect(() => {
+    if (!uid) {
+      setUserRoutes([]);
+      setUserRoutesError(null);
+      return;
+    }
+
+    const unsubscribe = subscribeUserRoutes(
+      uid,
+      (incoming) => {
+        setUserRoutes(incoming);
+      },
+      (message) => {
+        setUserRoutesError(message);
+      }
+    );
+
+    return unsubscribe;
+  }, [uid]);
+
+  const combinedRoutes = useMemo(() => {
+    if (!userRoutes.length) return routes;
+
+    const mapBySignature = new Map<string, TrackTrailRoute>();
+    const buildSignature = (route: TrackTrailRoute) => {
+      const start = route.startPoint
+        ? `${route.startPoint.latitude.toFixed(6)},${route.startPoint.longitude.toFixed(6)}`
+        : "na";
+      return `${route.titulo.toLowerCase()}|${start}`;
+    };
+
+    routes.forEach((route) => {
+      mapBySignature.set(buildSignature(route), route);
+    });
+    userRoutes.forEach((route) => {
+      mapBySignature.set(buildSignature(route), route);
+    });
+
+    return Array.from(mapBySignature.values());
+  }, [routes, userRoutes]);
 
   const categories = useMemo(() => {
     const dynamicTypes = Array.from(
       new Set(
-        routes
+        combinedRoutes
           .map((route) => route.tipo)
           .filter((item): item is string => Boolean(item))
       )
     );
     return ["Todos", ...dynamicTypes];
-  }, [routes]);
+  }, [combinedRoutes]);
 
   const stopLocationWatcher = () => {
     if (locationWatcherRef.current) {
@@ -76,12 +153,33 @@ export default function HomeScreen({ navigation }: any) {
   const requestLocationAccess = async (showSystemAlert: boolean): Promise<boolean> => {
     try {
       console.log("[map] Validating GPS services status");
-      const servicesEnabled = await Location.hasServicesEnabledAsync();
+      let servicesEnabled = await Location.hasServicesEnabledAsync();
+      if (!servicesEnabled && Platform.OS === "android") {
+        try {
+          await Location.enableNetworkProviderAsync();
+          servicesEnabled = await Location.hasServicesEnabledAsync();
+        } catch (error: any) {
+          console.warn("[map] enableNetworkProviderAsync failed:", error?.message || String(error));
+        }
+      }
+
       if (!servicesEnabled) {
         console.warn("[map] Location services are disabled on device");
         setLocationError("GPS desativado. Ative a localização do dispositivo.");
         if (showSystemAlert) {
-          Alert.alert("GPS desativado", "Ative a localização do dispositivo para usar o mapa em tempo real.");
+          Alert.alert(
+            "GPS desativado",
+            "Ative a localização do dispositivo para usar o mapa em tempo real.",
+            [
+              { text: "Cancelar", style: "cancel" },
+              {
+                text: "Abrir ajustes",
+                onPress: () => {
+                  Linking.openSettings().catch(() => {});
+                },
+              },
+            ]
+          );
         }
         return false;
       }
@@ -97,10 +195,19 @@ export default function HomeScreen({ navigation }: any) {
         setLocationError("Permissão de localização negada.");
         setHasPermission(false);
         if (showSystemAlert) {
-          Alert.alert(
-            "Permissão necessária",
-            "Permita o acesso à localização para centralizar o mapa e usar o modo em tempo real."
-          );
+          Alert.alert("Permissão necessária", "Permita o acesso à localização para usar o modo em tempo real.", [
+            { text: "Cancelar", style: "cancel" },
+            ...(permission.canAskAgain === false
+              ? [
+                  {
+                    text: "Abrir ajustes",
+                    onPress: () => {
+                      Linking.openSettings().catch(() => {});
+                    },
+                  },
+                ]
+              : []),
+          ]);
         }
         return false;
       }
@@ -192,11 +299,23 @@ export default function HomeScreen({ navigation }: any) {
   }, [isFocused]);
 
   useEffect(() => {
+    if (!authResolved) return;
+
+    if (!uid) {
+      setRoutes([]);
+      setAlerts([]);
+      setRouteError(null);
+      setAlertError(null);
+      setLoadingRoutes(false);
+      setLoadingAlerts(false);
+      return;
+    }
+
     console.log("[map] HomeScreen subscriptions starting");
     
     // Safety timeout to avoid infinite loading
     const safetyTimeout = setTimeout(() => {
-      if (loadingRoutes || loadingAlerts) {
+      if (loadingRoutesRef.current || loadingAlertsRef.current) {
         console.warn("[map] Subscriptions taking too long. Releasing loading states.");
         setLoadingRoutes(false);
         setLoadingAlerts(false);
@@ -207,11 +326,16 @@ export default function HomeScreen({ navigation }: any) {
       (incoming) => {
         console.log(`[map] Routes updated: ${incoming.length}`);
         setRoutes(incoming);
+        setRouteError(null);
         setLoadingRoutes(false);
-        if (!loadingAlerts) clearTimeout(safetyTimeout);
+        if (!loadingAlertsRef.current) clearTimeout(safetyTimeout);
       },
       (message) => {
-        console.error(`[map] Routes subscription error: ${message}`);
+        if (isOfflineFallbackMessage(message)) {
+          console.warn(`[map] Routes subscription fallback: ${message}`);
+        } else {
+          console.error(`[map] Routes subscription error: ${message}`);
+        }
         setRouteError(message);
         setLoadingRoutes(false);
       }
@@ -221,11 +345,16 @@ export default function HomeScreen({ navigation }: any) {
       (incoming) => {
         console.log(`[map] Alerts updated: ${incoming.length}`);
         setAlerts(incoming);
+        setAlertError(null);
         setLoadingAlerts(false);
-        if (!loadingRoutes) clearTimeout(safetyTimeout);
+        if (!loadingRoutesRef.current) clearTimeout(safetyTimeout);
       },
       (message) => {
-        console.error(`[map] Alerts subscription error: ${message}`);
+        if (isOfflineFallbackMessage(message)) {
+          console.warn(`[map] Alerts subscription fallback: ${message}`);
+        } else {
+          console.error(`[map] Alerts subscription error: ${message}`);
+        }
         setAlertError(message);
         setLoadingAlerts(false);
       }
@@ -237,10 +366,41 @@ export default function HomeScreen({ navigation }: any) {
       unsubscribeRoutes();
       unsubscribeAlerts();
     };
-  }, []);
+  }, [authResolved, uid]);
+
+  useEffect(() => {
+    if (!isFocused || !authResolved) return;
+    let mounted = true;
+
+    const loadPOIs = async () => {
+      try {
+        setLoadingPois(true);
+        const incoming = await fetchPOIs();
+        if (!mounted) return;
+        setPois(incoming);
+        setPoiError(null);
+      } catch (error: any) {
+        if (!mounted) return;
+        const message = error?.message || String(error);
+        if (message.toLowerCase().includes("permission_denied") || message.toLowerCase().includes("permissão")) {
+           console.log("[map] POIs permission delayed or denied. Using cache if available.");
+        } else {
+           setPoiError(message);
+        }
+      } finally {
+        if (mounted) setLoadingPois(false);
+      }
+    };
+
+    loadPOIs();
+
+    return () => {
+      mounted = false;
+    };
+  }, [isFocused, authResolved]);
 
   const routeDistances = useMemo<RouteDistance[]>(() => {
-    return routes.map((route): RouteDistance => {
+    return combinedRoutes.map((route): RouteDistance => {
       if (!location || !route.startPoint) {
         return route;
       }
@@ -257,7 +417,7 @@ export default function HomeScreen({ navigation }: any) {
         distanceFromUserKm: km,
       };
     });
-  }, [location, routes]);
+  }, [combinedRoutes, location]);
 
   const alertsByRoute = useMemo(() => {
     return alerts.reduce<Record<string, TrailAlert[]>>((acc, item) => {
@@ -270,17 +430,32 @@ export default function HomeScreen({ navigation }: any) {
 
   const visibleRoutes = useMemo(() => {
     return routeDistances.filter((route) => {
+      // 1. Filtro de Categoria
       const normalizedRouteType = normalizeRouteType(route.tipo);
       const normalizedActiveFilter = normalizeRouteType(activeFilter);
       const categoryOk =
         activeFilter === "Todos" || normalizedRouteType.includes(normalizedActiveFilter);
 
       if (!categoryOk) return false;
-      if (!nearbyOnly) return true;
 
-      return (route.distanceFromUserKm ?? Number.POSITIVE_INFINITY) <= NEARBY_RADIUS_KM;
+      // 2. Filtro de Perto de Mim
+      if (nearbyOnly && (route.distanceFromUserKm ?? Number.POSITIVE_INFINITY) > NEARBY_RADIUS_KM) {
+        return false;
+      }
+
+      // 3. Filtro de Origem (Minhas vs Comunidade)
+      if (sourceFilter === "mine") {
+        if (!uid) return false;
+        return route.userId === uid;
+      }
+      if (sourceFilter === "community") {
+        if (!uid) return true;
+        return route.userId !== uid;
+      }
+
+      return true;
     });
-  }, [activeFilter, nearbyOnly, routeDistances]);
+  }, [activeFilter, nearbyOnly, sourceFilter, routeDistances, uid]);
 
   const activeAlerts = useMemo(
     () => alerts.filter((alert) => alert.status === "ativo"),
@@ -321,6 +496,14 @@ export default function HomeScreen({ navigation }: any) {
         ),
     [alerts]
   );
+  const safePOIs = useMemo(
+    () =>
+      pois.filter(
+        (poi): poi is PointOfInterest =>
+          Number.isFinite(poi?.coordenadas?.latitude) && Number.isFinite(poi?.coordenadas?.longitude)
+      ),
+    [pois]
+  );
 
   const recentAlerts = useMemo(
     () => alerts.filter((alert) => Date.now() - alert.createdAtMs <= 12 * 60 * 60 * 1000),
@@ -328,6 +511,7 @@ export default function HomeScreen({ navigation }: any) {
   );
 
   const selectedRouteId = selectedRoute?.id;
+  const hasLocation = Boolean(location);
   useEffect(() => {
     if (!selectedRouteId) return;
     const updated = routeDistances.find((item) => item.id === selectedRouteId) || null;
@@ -349,6 +533,7 @@ export default function HomeScreen({ navigation }: any) {
         mapRef.current?.animateCamera({ center: nearest.startPoint, zoom: 13 });
         setSelectedRoute(nearest);
         setSelectedAlert(null);
+        setSelectedPOI(null);
       }
 
       return nextValue;
@@ -359,6 +544,7 @@ export default function HomeScreen({ navigation }: any) {
     () => toCoordinateArray(selectedRoute?.rotaCompleta),
     [selectedRoute?.rotaCompleta]
   );
+  const selectedPOIMeta = selectedPOI ? POI_TYPE_META[selectedPOI.tipo] : null;
 
   const handleOpenDirections = async () => {
     if (!selectedRoute?.startPoint) return;
@@ -380,10 +566,32 @@ export default function HomeScreen({ navigation }: any) {
     navigation.navigate("Atividades", { rotaSugerida: selectedRoute });
   };
 
+  const handleOpenPOIDirections = async () => {
+    if (!selectedPOI) return;
+    const url = `http://maps.google.com/maps?q=${selectedPOI.coordenadas.latitude},${selectedPOI.coordenadas.longitude}`;
+    try {
+      const canOpen = await Linking.canOpenURL(url);
+      if (!canOpen) {
+        Alert.alert("Mapa indisponível", "Não foi possível abrir o aplicativo de mapas.");
+        return;
+      }
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert("Mapa indisponível", "Não foi possível abrir o aplicativo de mapas.");
+    }
+  };
+
   const handleRegisterAlert = () => {
     navigation.navigate("AlertForm", {
       routeId: selectedRoute?.id,
       routeName: selectedRoute?.titulo,
+      latitude: selectedRoute?.startPoint?.latitude ?? location?.coords.latitude,
+      longitude: selectedRoute?.startPoint?.longitude ?? location?.coords.longitude,
+    });
+  };
+
+  const handleRegisterPOI = () => {
+    navigation.navigate("AddPOI", {
       latitude: selectedRoute?.startPoint?.latitude ?? location?.coords.latitude,
       longitude: selectedRoute?.startPoint?.longitude ?? location?.coords.longitude,
     });
@@ -402,10 +610,24 @@ export default function HomeScreen({ navigation }: any) {
   const activeAlertsForRoute = selectedRoute ? alertsByRoute[selectedRoute.id] || [] : [];
   const selectedRouteActiveAlerts = activeAlertsForRoute.filter((item) => item.status === "ativo");
 
-  const loading = loadingRoutes || loadingAlerts;
+  const loading = loadingRoutes || loadingAlerts || loadingPois;
   const tabSafeOffset = Math.max(insets.bottom, 12);
+  const hasSelectionCard = Boolean(selectedRoute || selectedAlert || selectedPOI);
   // Aumentado para subir mais os botões flutuantes
   const floatingBottomBase = tabSafeOffset + 38; 
+  const routeFabBottom = hasSelectionCard
+    ? floatingBottomBase + 268
+    : floatingBottomBase + 192;
+  const routeActionMenuBottom = routeFabBottom + 72;
+  const alertFabBottom = hasSelectionCard
+    ? floatingBottomBase + 207
+    : floatingBottomBase + 131;
+  const poiFabBottom = hasSelectionCard
+    ? floatingBottomBase + 146
+    : floatingBottomBase + 70;
+  const listFabBottom = hasSelectionCard
+    ? floatingBottomBase + 85
+    : floatingBottomBase + 9;
   const handleOpenDrawer = () => {
     const parent = navigation.getParent?.();
     if (parent?.openDrawer) {
@@ -420,13 +642,13 @@ export default function HomeScreen({ navigation }: any) {
       console.log("[map] HomeScreen focused. Ready for map rendering.");
       console.log("[map] Initial state check:", {
         hasPermission,
-        routesCount: routes.length,
+        routesCount: combinedRoutes.length,
         alertsCount: alerts.length,
-        locationAvailable: !!location,
+        locationAvailable: hasLocation,
         isWeb: Platform.OS === "web",
       });
     }
-  }, [isFocused, hasPermission, routes.length, alerts.length, !!location]);
+  }, [isFocused, hasPermission, combinedRoutes.length, alerts.length, hasLocation]);
 
   return (
     <View style={styles.container}>
@@ -442,7 +664,26 @@ export default function HomeScreen({ navigation }: any) {
           onMapReady={() => {
             console.log("[map] MapView native component ready.");
           }}
+          onLongPress={(event) => {
+            const coordinate = toCoordinate(event.nativeEvent.coordinate);
+            if (!coordinate) return;
+            navigation.navigate("AddPOI", coordinate);
+          }}
         >
+          {safePOIs.map((poi) => (
+            <Marker
+              key={`poi-${poi.id}`}
+              coordinate={poi.coordenadas}
+              onPress={() => {
+                setSelectedPOI(poi);
+                setSelectedRoute(null);
+                setSelectedAlert(null);
+              }}
+            >
+              <POIMarker poi={poi} selected={selectedPOI?.id === poi.id} />
+            </Marker>
+          ))}
+
           {safeVisibleRoutes.map((route) => {
             if (!route.safeStartPoint) return null;
             return (
@@ -452,6 +693,7 @@ export default function HomeScreen({ navigation }: any) {
                 onPress={() => {
                   setSelectedRoute(route);
                   setSelectedAlert(null);
+                  setSelectedPOI(null);
                 }}
               >
                 <RouteMarker
@@ -474,6 +716,7 @@ export default function HomeScreen({ navigation }: any) {
                 onPress={() => {
                   setSelectedAlert(alert);
                   setSelectedRoute(null);
+                  setSelectedPOI(null);
                 }}
               >
                 <AlertMarker alert={alert} selected={selectedAlert?.id === alert.id} />
@@ -512,6 +755,29 @@ export default function HomeScreen({ navigation }: any) {
           </TouchableOpacity>
         </View>
 
+        <View style={styles.sourceFilterContainer}>
+          <TouchableOpacity
+            style={[styles.sourceOption, sourceFilter === "all" ? styles.sourceOptionActive : null]}
+            onPress={() => setSourceFilter("all")}
+          >
+            <Text style={[styles.sourceOptionText, sourceFilter === "all" ? styles.sourceOptionTextActive : null]}>Todas</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.sourceOption, sourceFilter === "mine" ? styles.sourceOptionActive : null]}
+            onPress={() => setSourceFilter("mine")}
+          >
+            <Text style={[styles.sourceOptionText, sourceFilter === "mine" ? styles.sourceOptionTextActive : null]}>Minhas</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.sourceOption, sourceFilter === "community" ? styles.sourceOptionActive : null]}
+            onPress={() => setSourceFilter("community")}
+          >
+            <Text style={[styles.sourceOptionText, sourceFilter === "community" ? styles.sourceOptionTextActive : null]}>Comunidade</Text>
+          </TouchableOpacity>
+        </View>
+
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
           {categories.map((category) => (
             <TouchableOpacity
@@ -521,6 +787,7 @@ export default function HomeScreen({ navigation }: any) {
                 setActiveFilter(category);
                 setSelectedRoute(null);
                 setSelectedAlert(null);
+                setSelectedPOI(null);
               }}
             >
               <Text style={[styles.filterText, activeFilter === category ? styles.filterTextActive : null]}>
@@ -574,14 +841,22 @@ export default function HomeScreen({ navigation }: any) {
       {loading ? (
         <View style={styles.loadingBadge}>
           <ActivityIndicator size="small" color="#000" />
-          <Text style={styles.loadingText}>Atualizando rotas e alertas...</Text>
+          <Text style={styles.loadingText}>Atualizando rotas, alertas e POIs...</Text>
         </View>
       ) : null}
 
-      {routeError || alertError ? (
+      {(routeError && !isOfflineFallbackMessage(routeError)) || 
+       (userRoutesError && !isOfflineFallbackMessage(userRoutesError)) || 
+       (alertError && !isOfflineFallbackMessage(alertError)) || 
+       (poiError && !isOfflineFallbackMessage(poiError)) ? (
         <View style={styles.errorBadge}>
           <Ionicons name="warning-outline" size={16} color="#fef3c7" />
-          <Text style={styles.errorText}>{routeError || alertError}</Text>
+          <Text style={styles.errorText}>
+            {(routeError && !isOfflineFallbackMessage(routeError) && routeError) || 
+             (userRoutesError && !isOfflineFallbackMessage(userRoutesError) && userRoutesError) || 
+             (alertError && !isOfflineFallbackMessage(alertError) && alertError) || 
+             (poiError && !isOfflineFallbackMessage(poiError) && poiError)}
+          </Text>
         </View>
       ) : null}
 
@@ -600,9 +875,7 @@ export default function HomeScreen({ navigation }: any) {
         <View
           style={[
             styles.routeActionMenu,
-            selectedRoute || selectedAlert
-              ? { bottom: floatingBottomBase + 264 }
-              : { bottom: floatingBottomBase + 118 },
+            { bottom: routeActionMenuBottom },
           ]}
         >
           <TouchableOpacity style={styles.routeActionItem} onPress={handleOpenSuggestRoute}>
@@ -620,9 +893,7 @@ export default function HomeScreen({ navigation }: any) {
       <TouchableOpacity
         style={[
           styles.fabRoute,
-          selectedRoute || selectedAlert
-            ? { bottom: floatingBottomBase + 206 }
-            : { bottom: floatingBottomBase + 130 },
+          { bottom: routeFabBottom },
         ]}
         onPress={() => setRouteActionVisible((current) => !current)}
       >
@@ -633,9 +904,7 @@ export default function HomeScreen({ navigation }: any) {
       <TouchableOpacity
         style={[
           styles.fabPrimary,
-          selectedRoute || selectedAlert
-            ? { bottom: floatingBottomBase + 145 }
-            : { bottom: floatingBottomBase + 70 },
+          { bottom: alertFabBottom },
         ]}
         onPress={handleRegisterAlert}
       >
@@ -645,10 +914,19 @@ export default function HomeScreen({ navigation }: any) {
 
       <TouchableOpacity
         style={[
+          styles.fabPOI,
+          { bottom: poiFabBottom },
+        ]}
+        onPress={handleRegisterPOI}
+      >
+        <Ionicons name="location" size={20} color="#000" />
+        <Text style={styles.fabText}>Registrar POI</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[
           styles.fabSecondary,
-          selectedRoute || selectedAlert
-            ? { bottom: floatingBottomBase + 84 }
-            : { bottom: floatingBottomBase },
+          { bottom: listFabBottom },
         ]}
         onPress={() => navigation.navigate("Próximas")}
       >
@@ -761,6 +1039,45 @@ export default function HomeScreen({ navigation }: any) {
         </View>
       ) : null}
 
+      {selectedPOI && selectedPOIMeta ? (
+        <View style={[styles.poiCardWrap, { bottom: floatingBottomBase + 6 }]}>
+          <View style={styles.poiCardHeader}>
+            <View style={[styles.poiIconDot, { backgroundColor: selectedPOIMeta.color }]}>
+              <Ionicons name={selectedPOIMeta.icon as any} size={16} color="#fff" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.poiCardTitle} numberOfLines={1}>
+                {selectedPOI.titulo}
+              </Text>
+              <Text style={styles.poiCardType}>{selectedPOIMeta.label}</Text>
+            </View>
+            <TouchableOpacity onPress={() => setSelectedPOI(null)}>
+              <Ionicons name="close" size={22} color="#9ca3af" />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.poiCardDescription} numberOfLines={3}>
+            {selectedPOI.descricao || "Sem descrição."}
+          </Text>
+
+          <View style={styles.poiMetaRow}>
+            <Ionicons name="person-outline" size={14} color="#93c5fd" />
+            <Text style={styles.poiMetaText}>Criado por: {selectedPOI.criadoPor}</Text>
+          </View>
+          <View style={styles.poiMetaRow}>
+            <Ionicons name="calendar-outline" size={14} color="#a7f3d0" />
+            <Text style={styles.poiMetaText}>
+              Registrado em: {new Date(selectedPOI.dataCriacao).toLocaleDateString("pt-BR")}
+            </Text>
+          </View>
+
+          <TouchableOpacity style={styles.poiActionBtn} onPress={handleOpenPOIDirections}>
+            <Ionicons name="navigate-outline" size={17} color="#020617" />
+            <Text style={styles.poiActionBtnText}>Abrir no mapa</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {!loading && visibleRoutes.length === 0 ? (
         <View style={styles.emptyStateBox}>
           <Text style={styles.emptyStateText}>
@@ -813,6 +1130,34 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,0,0,0.65)",
     padding: 10,
     borderRadius: 50,
+  },
+
+  sourceFilterContainer: {
+    flexDirection: "row",
+    backgroundColor: "rgba(0,0,0,0.72)",
+    marginHorizontal: 20,
+    marginBottom: 10,
+    borderRadius: 12,
+    padding: 3,
+    borderWidth: 1,
+    borderColor: "#374151",
+  },
+  sourceOption: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: "center",
+    borderRadius: 9,
+  },
+  sourceOptionActive: {
+    backgroundColor: "#1e4db7",
+  },
+  sourceOptionText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  sourceOptionTextActive: {
+    color: "#fff",
   },
 
   filterScroll: { paddingHorizontal: 20, gap: 10, alignItems: "center" },
@@ -922,6 +1267,18 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 20,
     backgroundColor: "#facc15",
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 13,
+    paddingVertical: 11,
+    borderRadius: 28,
+    elevation: 8,
+    gap: 6,
+  },
+  fabPOI: {
+    position: "absolute",
+    right: 20,
+    backgroundColor: "#86efac",
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 13,
@@ -1075,6 +1432,73 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   alertDetailBtnText: { color: "#fff", fontWeight: "700" },
+
+  poiCardWrap: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    backgroundColor: "#020617",
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#1e293b",
+    elevation: 10,
+  },
+  poiCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 8,
+  },
+  poiIconDot: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  poiCardTitle: {
+    color: "#f8fafc",
+    fontWeight: "800",
+    fontSize: 15,
+  },
+  poiCardType: {
+    color: "#93c5fd",
+    fontWeight: "700",
+    fontSize: 12,
+    marginTop: 1,
+  },
+  poiCardDescription: {
+    color: "#cbd5e1",
+    lineHeight: 19,
+    marginBottom: 10,
+  },
+  poiMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  poiMetaText: {
+    color: "#94a3b8",
+    fontSize: 12,
+    flexShrink: 1,
+  },
+  poiActionBtn: {
+    marginTop: 10,
+    borderRadius: 12,
+    backgroundColor: "#67e8f9",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 6,
+    paddingVertical: 11,
+  },
+  poiActionBtnText: {
+    color: "#020617",
+    fontWeight: "800",
+    fontSize: 13,
+  },
 
   emptyStateBox: {
     position: "absolute",
